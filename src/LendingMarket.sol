@@ -261,9 +261,16 @@ contract LendingMarket {
         uint256 owed = borrowBalanceOf(borrower);
         if (repayAmount > owed) repayAmount = owed;
 
-        uint256 seizeAmount = (repayAmount * liquidationIncentive) / FACTOR;
-        if (seizeAmount > collateralBalance[borrower]) {
-            seizeAmount = collateralBalance[borrower];
+        // Collateral is priced in base terms, so the seized amount is the repaid base value plus the
+        // incentive, converted into collateral units at the oracle price.
+        uint256 price = getPrice();
+        uint256 seizeAmount = (repayAmount * liquidationIncentive) / price;
+        uint256 available = collateralBalance[borrower];
+        if (seizeAmount > available) {
+            // The position cannot cover the request. Seize what is left and charge the liquidator
+            // only for that, rounded up. The uncovered debt stays on the books.
+            seizeAmount = available;
+            repayAmount = (seizeAmount * price + liquidationIncentive - 1) / liquidationIncentive;
         }
 
         uint256 principal = _principalForBorrow(repayAmount);
