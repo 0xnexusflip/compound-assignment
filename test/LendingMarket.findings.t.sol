@@ -447,6 +447,18 @@ contract LendingMarketFindingsTest is Test {
         _fundLiquidator(20_000e18);
         uint256 owed = market.borrowBalanceOf(borrower);
         uint256 collateralValue = (10e18 * price) / FACTOR;
+        bool fullClose = 10e18 * price < owed * uint256(1.1e18);
+        if (fullClose) {
+            uint256 fullRepay = collateralValue >= owed
+                ? owed
+                : (collateralValue * FACTOR + uint256(1.1e18) - 1) / uint256(1.1e18);
+            if (repayAmount < fullRepay) {
+                vm.prank(liquidator);
+                vm.expectRevert("underwater, close in full");
+                market.liquidate(borrower, repayAmount);
+                return;
+            }
+        }
         vm.prank(liquidator);
         market.liquidate(borrower, repayAmount);
 
@@ -457,7 +469,7 @@ contract LendingMarketFindingsTest is Test {
 
         assertLe(seized, 10e18);
         assertLe(paid, owed);
-        if (collateralValue < (owed * uint256(1.1e18)) / FACTOR) {
+        if (fullClose) {
             assertEq(seized, 10e18, "underwater position must close in full");
             assertEq(market.collateralBalance(borrower), 0);
             assertEq(market.borrowBalanceOf(borrower), 0);
@@ -554,8 +566,11 @@ contract LendingMarketFindingsTest is Test {
 
         _fundLiquidator(10_000e18);
         vm.prank(liquidator);
+        vm.expectRevert("underwater, close in full");
         market.liquidate(borrower, 9_090_909_090_909_090_909_090); // would have seized 10e18 - 1
 
+        vm.prank(liquidator);
+        market.liquidate(borrower, 15_000e18);
         assertEq(market.collateralBalance(borrower), 0);
         assertEq(market.borrowBalanceOf(borrower), 0);
         assertGt(market.badDebt(), 0);
@@ -595,5 +610,31 @@ contract LendingMarketFindingsTest is Test {
         vm.prank(guardian);
         vm.expectRevert("not guardian");
         market.setPaused(true);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // F-15: branch test and seize math disagreed by one wei below a price of 1e18
+    // ---------------------------------------------------------------------------------------
+
+    /// @dev With collateral worth less than one base unit per unit, the rounded branch test could
+    ///      pick the partial branch while the unrounded seize math exceeded the collateral, and the
+    ///      full liquidation reverted on underflow.
+    function test_liquidate_fullCloseAtSubUnitPrice() public {
+        _postCollateral(borrower, 33_000e18 + 10);
+        wethOracle.setPrice(1e18);
+        vm.prank(borrower);
+        market.borrow(15_000e18 + 5);
+
+        // Collateral value 16,500 + 5 wei, within one wei of owed * 1.10 after rounding.
+        wethOracle.setPrice(0.5e18);
+        assertFalse(market.isHealthy(borrower));
+
+        _fundLiquidator(20_000e18);
+        vm.prank(liquidator);
+        market.liquidate(borrower, 15_000e18 + 5);
+
+        assertEq(market.collateralBalance(borrower), 0);
+        assertEq(market.borrowBalanceOf(borrower), 0);
+        assertEq(market.badDebt(), 0);
     }
 }

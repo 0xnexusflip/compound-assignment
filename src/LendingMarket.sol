@@ -289,15 +289,19 @@ contract LendingMarket {
         uint256 available = collateralBalance[borrower];
         uint256 collateralValue = (available * price) / FACTOR;
         uint256 seizeAmount;
-        if (collateralValue < (owed * liquidationIncentive) / FACTOR) {
+        // Both sides unrounded, so the branch test and the seize math cannot disagree by one wei.
+        if (available * price < owed * liquidationIncentive) {
             // The collateral cannot pay the debt plus the incentive, so the position is closed in full
             // whatever was requested. A partial close here would leave dust that dodges the write-off
             // below. The liquidator pays the whole debt while the collateral still covers it, and
             // only when it does not is the incentive taken out of the uncovered remainder.
             seizeAmount = available;
-            repayAmount = collateralValue >= owed
+            uint256 fullRepay = collateralValue >= owed
                 ? owed
                 : (collateralValue * FACTOR + liquidationIncentive - 1) / liquidationIncentive;
+            // Never charge more than the liquidator asked for. It must opt into the full close.
+            require(repayAmount >= fullRepay, "underwater, close in full");
+            repayAmount = fullRepay;
         } else {
             seizeAmount = (repayAmount * liquidationIncentive) / price;
         }
