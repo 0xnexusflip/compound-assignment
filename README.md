@@ -31,6 +31,7 @@ test/
   legacy/LendingMarketLegacy.sol    renamed copy of the live implementation, test fixture only
   mocks/FalseReturnERC20.sol        token that returns false instead of reverting
   invariant/                        stateful properties under random action sequences
+  LendingMarket.gas.t.sol           gas of each hot path, live versus fixed
 ```
 
 ## How it works
@@ -186,6 +187,22 @@ Deployment is one timelock transaction: deploy the new `LendingMarket` and call 
 
 Warning: after the upgrade, `borrow`, `withdrawCollateral` and `liquidate` revert while the feed is older than the maximum age. That is the intended fail-closed behavior. Confirm the production feed's heartbeat is below one day before the upgrade, or set a larger age in the same timelock batch.
 
+### Gas
+
+`test/LendingMarket.gas.t.sol` runs the same flow on the live implementation and on the fixed one, each from a cold start (`forge test --match-contract LendingMarketGasTest -vv`).
+
+| Path | Live | Fixed | Delta |
+|---|---|---|---|
+| `supply` | 74,085 | 74,090 | +5 |
+| `supplyCollateral` | 73,549 | 73,415 | -134 |
+| `borrow` | 56,827 | 59,314 | +2,487 |
+| `repay` | 11,255 | 11,339 | +84 |
+| `withdrawCollateral` | 10,217 | 13,305 | +3,088 |
+| `liquidate` | 42,106 | 41,898 | -208 |
+| `withdraw` | 27,930 | 28,148 | +218 |
+
+The two visible increases are the oracle age check with the round-up on `borrow`, and the accrual that `withdrawCollateral` was missing (F-4).
+
 ### Static analysis
 
 Slither (75 detectors, `lib/`, `test/`, `script/` and `mocks/` filtered) reports no High. Its Medium items are triaged as follows. The strict equalities (`amount == owed`, `collateralBalance == 0`, `debt == 0`, `elapsed == 0`) are intentional. Each compares values derived by the same arithmetic. The divide-before-multiply hits are the index math itself and lose at most one wei per step, in the market's favor after F-6. The two inbound-transfer reentrancy flags had no gain path with the listed tokens, and the transfers now run after the state writes. The ignored `roundId` and `answeredInRound` fields are a deliberate choice, since the age check covers staleness for a Chainlink-style feed. Aderyn reports three High items, all in the proxy: Yul `return`, unchecked `delegatecall` and locked ether. That is the expected shape of a proxy and out of scope.
@@ -207,6 +224,6 @@ Slither (75 detectors, `lib/`, `test/`, `script/` and `mocks/` filtered) reports
 
 I prioritized the paths that move value against a price, in this order: liquidation, oracle, health checks, token movement, then the index math. I deliberately left the design questions above to the team. I did not add a reserve factor, a close factor, a separate liquidation threshold or a two-step admin transfer.
 
-I am unsure whether a one-day default price age fits the production feed. With more time I would read the heartbeat of the feed onchain and run the invariant suite under Medusa for hours instead of seconds. I would also measure gas against the live implementation.
+I am unsure whether a one-day default price age fits the production feed. With more time I would read the heartbeat of the feed onchain and run the invariant suite under Medusa for hours instead of seconds.
 
 AI tooling was used throughout. All fixes were validated with manual passes by me. One suggestion I rejected: adding a `reinitialize` step to set the maximum price age during the upgrade. The proxy has no `upgradeToAndCall`, so that leaves a window between two transactions in which the market runs unprotected. The zero-means-default fallback removes the window.
