@@ -61,7 +61,7 @@ See `script/Deploy.s.sol` for the current staging configuration.
 
 ## Findings
 
-Fifteen defects, numbered in the order I found them. F-12 to F-15 came out of two further review passes over my own fixes. Each one has a test in `test/LendingMarket.findings.t.sol` that fails against the implementation that is live today and passes against the fixed one. `test/LendingMarket.upgrade.t.sol` reproduces the two worst ones on the live code, upgrades the proxy, and shows them closed. `test/invariant/` holds four stateful properties checked under random sequences of every user action, time, price moves and donations. Totals equal account sums. Collateral is fully backed. Supplier claims are covered by cash plus debt. The supply index never outruns the borrow index. All four hold over 2,000 runs at depth 100, which is 200,000 calls each.
+Nineteen defects, numbered in the order I found them. F-12 to F-15 came out of two further review passes over my own fixes. F-16 to F-18 were hardening items from the notes below, done after the audit findings with the time that was left. F-19 came out of the long invariant campaign on the final code. Each one has a test in `test/LendingMarket.findings.t.sol` that fails against the implementation that is live today and passes against the fixed one. `test/LendingMarket.upgrade.t.sol` reproduces the two worst ones on the live code, upgrades the proxy, and shows them closed. `test/invariant/` holds four stateful properties checked under random sequences of every user action, time, price moves and donations. Totals equal account sums. Collateral is fully backed. Supplier claims are covered by cash plus debt plus recorded bad debt, within 10 wei. The supply index never outruns the borrow index. All four hold over 2,000 runs at depth 100, which is 200,000 calls each.
 
 | ID | Severity | Title | Where |
 |---|---|---|---|
@@ -80,6 +80,10 @@ Fifteen defects, numbered in the order I found them. F-12 to F-15 came out of tw
 | F-13 | Medium | Collateral factor times incentive is unbounded | `setParameters` |
 | F-14 | Medium | A compromised guardian cannot be replaced | `setPauseGuardian` |
 | F-15 | Low | Liquidation branch test and seize math disagreed by one wei | `liquidate` |
+| F-16 | Low | Single-step admin transfer with no event | `setAdmin` |
+| F-17 | Low | `initialize` skipped the setter checks, bare implementation was initializable | `initialize` |
+| F-18 | Low | One factor served as borrow limit and liquidation threshold | `liquidate` |
+| F-19 | Low | Suppliers were credited more than borrowers owed, by dust | `accrueInterest` |
 
 ### F-1 Critical. Liquidation seizes collateral in base units
 
@@ -207,9 +211,41 @@ The full-close test compared two rounded values while the seize math used the un
 
 **Test.** `test_liquidate_fullCloseAtSubUnitPrice`.
 
+### F-16 Low. Single-step admin transfer with no event
+
+`setAdmin` wrote the new admin at once. A typo handed the market, its risk parameters and its upgrade path to a dead address with no recovery.
+
+**Fix.** `setAdmin` nominates a `pendingAdmin` in a new appended slot, and `acceptAdmin` completes the transfer. Both emit. The signature of `setAdmin` is unchanged, only its effect is deferred until the nominee accepts.
+
+**Test.** `test_setAdmin_requiresAcceptance`.
+
+### F-17 Low. `initialize` skipped the setter checks, and the bare implementation was initializable
+
+`initialize` wrote the factor, the incentive and the oracle with none of the bounds the setters enforce. A new market could start in a state the setters would refuse. Anyone could also call `initialize` on the implementation contract itself. That was harmless today, with no `delegatecall` or `selfdestruct`, but it is a standing question for every future upgrade.
+
+**Fix.** `initialize` applies the same four checks as the setters. A constructor marks the implementation initialized. Proxy storage is separate and untouched.
+
+**Tests.** `test_initialize_rejectsParametersTheSettersReject`, `test_initialize_revertsOnBareImplementation`.
+
+### F-18 Low. One factor served as borrow limit and liquidation threshold
+
+`borrow` and `liquidate` used the same `isHealthy` with the same `collateralFactor`. A borrower at the limit was liquidatable after one second of interest and paid the 10 percent incentive for it.
+
+**Fix.** `liquidate` uses `isLiquidatable`, which compares the debt against the collateral value times `liquidationThreshold()`. The threshold lives in a new appended slot. Zero means `collateralFactor`, so the live rule holds until the admin sets a higher value with `setLiquidationThreshold`. Changing the factor above a set threshold is refused.
+
+**Tests.** `test_setLiquidationThreshold_givesBufferAboveBorrowLimit`, `test_setLiquidationThreshold_bounds`.
+
+### F-19 Low. Suppliers were credited more than borrowers owed, by dust
+
+The borrow index increment is rounded down and then multiplied by the whole borrow principal. The supplier share was computed from the unrounded product of borrows and interest. On every accrual the supplier claims grew a little more than the debt did. With 1,000,000 of borrows the gap is up to 1e6 wei per accrual, which is 1e-12 of a base unit. Its direction is against the market and it compounds with every call. The 200,000 call invariant campaign on the final code found it, and the shorter runs had not.
+
+**Fix.** The supplier share is derived from the debt growth that borrowers actually incur. Claims can never exceed cash plus debt plus recorded bad debt. The invariant tolerance went from 1e6 wei to 10 wei.
+
+**Test.** `invariant_supplierClaimsAreCovered` at 2,000 runs and depth 100.
+
 ## Shipping it to the live proxy
 
-The storage layout is unchanged in slots 0 to 17. Two variables are appended: `_maxPriceAge` at slot 18 and `badDebt` at slot 19. No variable was removed, reordered or retyped, and no reinitializer is needed. Verified with:
+The storage layout is unchanged in slots 0 to 17. Four variables are appended: `_maxPriceAge` at slot 18, `badDebt` at slot 19, `pendingAdmin` at slot 20 and `_liquidationThreshold` at slot 21. No variable was removed, reordered or retyped, and no reinitializer is needed. Verified with:
 
 ```bash
 forge build --extra-output storageLayout
@@ -219,7 +255,7 @@ forge inspect LendingMarket storage-layout         # the fixed code
 
 `test/LendingMarket.upgrade.t.sol` deploys the live implementation behind the proxy, opens real positions, and accrues a year of interest. It then calls `upgradeTo` and asserts that every balance, index and parameter survives and that each fix is active at once.
 
-Deployment is one timelock transaction: deploy the new `LendingMarket` and call `upgradeTo` on the proxy. Optionally follow with `setMaxPriceAge` tuned to the production feed's heartbeat. If F-1 was ever exploited on the live market, accounts with debt and no collateral exist. One `liquidate(account, 1)` call per such account writes that debt off, costs the caller nothing, and is rehearsed in `test_upgrade_orphanDebtCanBeWrittenOff`. Every existing external function signature is unchanged. Four functions were added, `maxPriceAge()`, `setMaxPriceAge(uint256)`, `setPauseGuardian(address)` and the `badDebt()` getter, plus three events.
+Deployment is one timelock transaction: deploy the new `LendingMarket` and call `upgradeTo` on the proxy. Optionally follow with `setMaxPriceAge` tuned to the production feed's heartbeat, and `setLiquidationThreshold` once the risk team has chosen a value above the collateral factor. If F-1 was ever exploited on the live market, accounts with debt and no collateral exist. One `liquidate(account, 1)` call per such account writes that debt off, costs the caller nothing, and is rehearsed in `test_upgrade_orphanDebtCanBeWrittenOff`. Every existing external function signature is unchanged. The added functions are `maxPriceAge()`, `setMaxPriceAge(uint256)`, `setPauseGuardian(address)`, `acceptAdmin()`, `isLiquidatable(address)`, `liquidationThreshold()`, `setLiquidationThreshold(uint256)` and the `badDebt()` and `pendingAdmin()` getters, plus six events. `setAdmin` keeps its signature but now nominates instead of transferring.
 
 Warning: after the upgrade, `borrow`, `withdrawCollateral` and `liquidate` revert while the feed is older than the maximum age. That is the intended fail-closed behavior. Confirm the production feed's heartbeat is below one day before the upgrade, or set a larger age in the same timelock batch.
 
@@ -229,37 +265,35 @@ Warning: after the upgrade, `borrow`, `withdrawCollateral` and `liquidate` rever
 
 | Path | Live | Fixed | Delta |
 |---|---|---|---|
-| `supply` | 74,085 | 74,090 | +5 |
-| `supplyCollateral` | 73,549 | 73,415 | -134 |
-| `borrow` | 56,827 | 59,314 | +2,487 |
-| `repay` | 11,255 | 11,339 | +84 |
-| `withdrawCollateral` | 10,217 | 13,327 | +3,110 |
-| `liquidate` | 42,106 | 42,341 | +235 |
-| `withdraw` | 27,930 | 28,148 | +218 |
+| `supply` | 74,085 | 74,156 | +71 |
+| `supplyCollateral` | 73,549 | 73,349 | -200 |
+| `borrow` | 56,827 | 59,543 | +2,716 |
+| `repay` | 11,255 | 11,391 | +136 |
+| `withdrawCollateral` | 10,217 | 13,358 | +3,141 |
+| `liquidate` | 42,106 | 44,477 | +2,371 |
+| `withdraw` | 27,930 | 28,214 | +284 |
 
-The two visible increases are the oracle age check with the round-up on `borrow`, and the accrual that `withdrawCollateral` was missing (F-4).
+Three increases are visible. `borrow` pays for the oracle age check and the round-up. `withdrawCollateral` pays for the accrual it was missing (F-4). `liquidate` pays one cold read of the liquidation threshold slot (F-18).
 
 ### Static analysis
 
-Slither (75 detectors, `lib/`, `test/`, `script/` and `mocks/` filtered) reports no High. Its Medium items are triaged as follows. The strict equalities (`amount == owed`, `collateralBalance == 0`, `debt == 0`, `elapsed == 0`) are intentional. Each compares values derived by the same arithmetic. The divide-before-multiply hits are the index math itself and lose at most one wei per step, in the market's favor after F-6. The two inbound-transfer reentrancy flags had no gain path with the listed tokens, and the transfers now run after the state writes. The ignored `roundId` and `answeredInRound` fields are a deliberate choice, since the age check covers staleness for a Chainlink-style feed. Aderyn reports three High items, all in the proxy: Yul `return`, unchecked `delegatecall` and locked ether. That is the expected shape of a proxy and out of scope.
+Slither (75 detectors, `lib/`, `test/`, `script/` and `mocks/` filtered) reports no High. Its Medium items are triaged as follows. The strict equalities (`amount == owed`, `collateralBalance == 0`, `debt == 0`, `elapsed == 0`) are intentional. Each compares values derived by the same arithmetic. The divide-before-multiply hits are the index math itself and lose at most one wei per step, in the market's favor after F-6. The two inbound-transfer reentrancy flags had no gain path with the listed tokens. The transfers now run after the state writes, and the flags are gone on the final code. The ignored `roundId` and `answeredInRound` fields are a deliberate choice, since the age check covers staleness for a Chainlink-style feed. Aderyn reports three High items, all in the proxy: Yul `return`, unchecked `delegatecall` and locked ether. That is the expected shape of a proxy and out of scope.
 
 ## Noted, not changed
 
 - `setPaused` also blocks `liquidate` and `withdrawCollateral`. A pause during a price crash shields underwater borrowers and lets bad debt form for suppliers. Compound-style markets pause seizures separately. This is a design decision for the team.
 - The liquidator profit is discontinuous where collateral value equals debt. One wei above, the liquidator pays the whole debt and earns the difference. One wei below, the incentive comes out of the written-off remainder. The continuous alternative writes off debt on positions whose collateral still covers it, which I chose not to do. Either rule is defensible, and the team should pick one.
 - Recorded bad debt (F-10) is still carried by the last supplier out. Sharing it pro rata through the supply index, or funding a reserve, needs a governance decision.
-- `initialize` applies none of the checks the setters enforce. It never runs again on the live proxy, so this only matters for a new market.
-- One `collateralFactor` serves as both the borrow limit and the liquidation threshold. A borrower at the limit is liquidatable after one second of interest. A separate, higher liquidation threshold is standard.
-- `setAdmin` is a single step with no event. A typo hands the market to a dead address. A two-step transfer is the standard fix. The proxy admin slot does not move with the market admin.
+- The liquidation threshold (F-18) ships at the collateral factor. The risk team has to choose the buffer.
+- The proxy admin slot does not move with the market admin. Transferring one without the other splits upgrade power from parameter power.
 - `setParameters` still allows a collateral factor of 100 percent with an incentive of exactly par. That is an admin input behind the timelock.
 - There is no close factor. A liquidator may repay 100 percent of a position. Standard markets cap this near 50 percent.
-- `initialize` is callable on the raw implementation contract. It has no `delegatecall` or `selfdestruct`, so the proxy is not affected. A constructor that sets `_initialized` would close it.
 - `supplyCollateral` credits `amount`, not the received balance, so a fee-on-transfer collateral would be over-credited. No such token is listed.
 - Interest is simple interest between accruals, not compounded per second. Frequent accruals compound, rare ones do not. It is a property of this index design.
 
 ## Scope note
 
-I prioritized the paths that move value against a price, in this order: liquidation, oracle, health checks, token movement, then the index math. I deliberately left the design questions above to the team. I did not add a reserve factor, a close factor, a separate liquidation threshold or a two-step admin transfer.
+I prioritized the paths that move value against a price, in this order: liquidation, oracle, health checks, token movement, then the index math. I deliberately left the design questions above to the team. I did not add a reserve factor, a close factor, bad-debt socialization or a separate liquidation pause.
 
 I am unsure whether a one-day default price age fits the production feed. With more time I would read the heartbeat of the feed onchain and run the invariant suite under Medusa for hours instead of seconds.
 
