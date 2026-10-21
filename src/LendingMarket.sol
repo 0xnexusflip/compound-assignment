@@ -347,6 +347,8 @@ contract LendingMarket {
         (, int256 answer,, uint256 updatedAt,) = oracle.latestRoundData();
         require(answer > 0, "invalid price");
         require(updatedAt <= block.timestamp && block.timestamp - updatedAt <= maxPriceAge(), "stale price");
+        // safe because answer is checked positive above
+        // forge-lint: disable-next-line(unsafe-typecast)
         return uint256(answer);
     }
 
