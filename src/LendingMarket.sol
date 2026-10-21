@@ -246,7 +246,9 @@ contract LendingMarket {
         uint256 owed = borrowBalanceOf(msg.sender);
         if (amount > owed) amount = owed;
 
-        uint256 principal = _principalForBorrow(amount);
+        // A full repayment clears the whole principal. Converting owed back to principal rounds down
+        // and can strand one unit that no later call can clear.
+        uint256 principal = amount == owed ? borrowPrincipal[msg.sender] : _principalForBorrow(amount);
 
         _transferIn(baseToken, amount);
 
@@ -287,7 +289,7 @@ contract LendingMarket {
             repayAmount = (seizeAmount * price + liquidationIncentive - 1) / liquidationIncentive;
         }
 
-        uint256 principal = _principalForBorrow(repayAmount);
+        uint256 principal = repayAmount == owed ? borrowPrincipal[borrower] : _principalForBorrow(repayAmount);
         borrowPrincipal[borrower] -= principal;
         totalBorrowPrincipal -= principal;
 

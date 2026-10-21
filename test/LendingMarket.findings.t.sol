@@ -343,4 +343,36 @@ contract LendingMarketFindingsTest is Test {
         vm.expectRevert("zero principal");
         market.supply(1);
     }
+
+    // ---------------------------------------------------------------------------------------
+    // F-8: a full repayment can leave one unit of principal behind
+    // ---------------------------------------------------------------------------------------
+
+    /// @dev owed rounds down, then the principal for owed rounds down again, so repay(max) can
+    ///      leave 1 principal and 1 wei of debt. That wei can never be repaid, because 1 wei
+    ///      converts to 0 principal, and the borrower can never free the last of the collateral.
+    function test_repay_fullRepaymentClearsPrincipal() public {
+        _postCollateral(borrower, 10e18);
+
+        // Borrow at an index that is not 1e18 so the principal is not a round number.
+        vm.warp(block.timestamp + 100 days);
+        wethOracle.setPrice(2_000e18);
+        vm.prank(borrower);
+        market.borrow(10_000e18);
+
+        vm.warp(block.timestamp + 265 days);
+        base.mint(borrower, 1_000e18);
+        vm.startPrank(borrower);
+        base.approve(address(market), type(uint256).max);
+        market.repay(type(uint256).max);
+        vm.stopPrank();
+
+        assertEq(market.borrowPrincipal(borrower), 0, "principal must be fully cleared");
+        assertEq(market.borrowBalanceOf(borrower), 0);
+
+        wethOracle.setPrice(2_000e18);
+        vm.prank(borrower);
+        market.withdrawCollateral(10e18);
+        assertEq(weth.balanceOf(borrower), 10e18);
+    }
 }
