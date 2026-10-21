@@ -151,7 +151,10 @@ contract LendingMarket {
         baseBorrowIndex += (baseBorrowIndex * interest) / FACTOR;
 
         if (suppliesBefore > 0) {
-            uint256 accruedToSuppliers = (borrowsBefore * interest) / FACTOR;
+            // Donated base lets borrows exceed supplies. Only the supplied value earns, so the supply
+            // index can never grow faster than the borrow index and cannot be inflated by a tiny supplier.
+            uint256 earning = borrowsBefore > suppliesBefore ? suppliesBefore : borrowsBefore;
+            uint256 accruedToSuppliers = (earning * interest) / FACTOR;
             baseSupplyIndex += (baseSupplyIndex * accruedToSuppliers) / suppliesBefore;
         }
 
@@ -169,6 +172,7 @@ contract LendingMarket {
         _transferIn(baseToken, amount);
 
         uint256 principal = _principalForSupply(amount);
+        require(principal > 0, "zero principal");
         supplyPrincipal[msg.sender] += principal;
         totalSupplyPrincipal += principal;
 

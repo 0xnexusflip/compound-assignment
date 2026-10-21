@@ -284,4 +284,63 @@ contract LendingMarketFindingsTest is Test {
         vm.expectRevert("would be undercollateralized");
         market.borrow(1);
     }
+
+    // ---------------------------------------------------------------------------------------
+    // F-7: the supply index can be inflated when supply is tiny
+    // ---------------------------------------------------------------------------------------
+
+    function _emptyMarket() internal returns (LendingMarket fresh) {
+        LendingMarket impl = new LendingMarket();
+        bytes memory initData = abi.encodeCall(
+            LendingMarket.initialize,
+            (admin, guardian, address(wethOracle), address(base), address(weth), 0.80e18, 1.10e18, RATE_PER_SECOND)
+        );
+        fresh = LendingMarket(address(new TransparentUpgradeableProxy(address(impl), admin, initData)));
+    }
+
+    /// @dev Interest to suppliers is divided by the supplied value. With 1 wei supplied and a
+    ///      donated balance borrowed against collateral, the supply index explodes, and the next
+    ///      real deposit converts to zero principal. The supply index must never outrun the
+    ///      borrow index.
+    function test_accrueInterest_supplyIndexNeverOutrunsBorrowIndex() public {
+        LendingMarket fresh = _emptyMarket();
+        address attacker = makeAddr("attacker");
+        address victim = makeAddr("victim");
+
+        base.mint(attacker, 1_000_001e18);
+        weth.mint(attacker, 1_000e18);
+        vm.startPrank(attacker);
+        base.approve(address(fresh), type(uint256).max);
+        weth.approve(address(fresh), type(uint256).max);
+        fresh.supply(1);
+        base.transfer(address(fresh), 1_000_000e18); // donation, not a supply
+        fresh.supplyCollateral(1_000e18);
+        fresh.borrow(1_000_000e18);
+        vm.stopPrank();
+
+        vm.warp(block.timestamp + 30 days);
+        fresh.accrueInterest();
+        assertLe(fresh.baseSupplyIndex(), fresh.baseBorrowIndex(), "supply index outran borrow index");
+
+        base.mint(victim, 30_000e18);
+        vm.startPrank(victim);
+        base.approve(address(fresh), type(uint256).max);
+        fresh.supply(30_000e18);
+        vm.stopPrank();
+        assertApproxEqAbs(fresh.supplyBalanceOf(victim), 30_000e18, 1);
+    }
+
+    /// @dev A deposit that converts to zero principal must revert instead of being absorbed.
+    function test_supply_revertsWhenPrincipalRoundsToZero() public {
+        _postCollateral(borrower, 10e18);
+        vm.prank(borrower);
+        market.borrow(10_000e18);
+        vm.warp(block.timestamp + 365 days);
+        market.accrueInterest();
+
+        base.mint(supplier, 1);
+        vm.prank(supplier);
+        vm.expectRevert("zero principal");
+        market.supply(1);
+    }
 }
