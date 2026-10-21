@@ -107,4 +107,94 @@ contract LendingMarketFindingsTest is Test {
         // The uncovered remainder stays on the books as bad debt rather than being gifted away.
         assertApproxEqAbs(market.borrowBalanceOf(borrower), 15_000e18 - paid, 1e6);
     }
+
+    // ---------------------------------------------------------------------------------------
+    // F-2: the pause guardian can replace the price oracle
+    // ---------------------------------------------------------------------------------------
+
+    /// @dev The README limits the guardian to stopping the market. Repricing is an admin power.
+    function test_setOracle_revertsForGuardian() public {
+        MockOracle rogue = new MockOracle(2_000_000e18);
+
+        vm.prank(guardian);
+        vm.expectRevert("not admin");
+        market.setOracle(address(rogue));
+
+        vm.prank(admin);
+        market.setOracle(address(rogue));
+        assertEq(address(market.oracle()), address(rogue));
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // F-3: oracle answers are used unchecked
+    // ---------------------------------------------------------------------------------------
+
+    /// @dev A negative answer cast to uint256 becomes a price near 2^256, which turns 1 wei of
+    ///      collateral into unbounded borrowing power. Risk-increasing paths must refuse it.
+    function test_borrow_revertsOnNegativeOracleAnswer() public {
+        _postCollateral(borrower, 1);
+        wethOracle.setPrice(-1);
+
+        vm.prank(borrower);
+        vm.expectRevert("invalid price");
+        market.borrow(1_000_000e18);
+    }
+
+    /// @dev A zero answer must not be accepted either. It would make every borrower liquidatable.
+    function test_liquidate_revertsOnZeroOracleAnswer() public {
+        _postCollateral(borrower, 10e18);
+        vm.prank(borrower);
+        market.borrow(5_000e18);
+
+        wethOracle.setPrice(0);
+
+        _fundLiquidator(1_000e18);
+        vm.prank(liquidator);
+        vm.expectRevert("invalid price");
+        market.liquidate(borrower, 1_000e18);
+    }
+
+    /// @dev A stalled feed must not keep pricing collateral. Borrowing against a stale price is
+    ///      refused once the answer is older than the configured maximum age.
+    function test_borrow_revertsOnStaleOracleAnswer() public {
+        _postCollateral(borrower, 10e18);
+
+        vm.warp(block.timestamp + market.maxPriceAge() + 1);
+
+        vm.prank(borrower);
+        vm.expectRevert("stale price");
+        market.borrow(1_000e18);
+
+        // A fresh answer restores the path.
+        wethOracle.setPrice(2_000e18);
+        vm.prank(borrower);
+        market.borrow(1_000e18);
+        assertEq(base.balanceOf(borrower), 1_000e18);
+    }
+
+    /// @dev Repaying never depends on the price, so a stalled feed must not trap borrowers.
+    function test_repay_worksWhileOracleIsStale() public {
+        _postCollateral(borrower, 10e18);
+        vm.prank(borrower);
+        market.borrow(1_000e18);
+
+        base.mint(borrower, 10e18); // covers one day of interest
+        vm.warp(block.timestamp + market.maxPriceAge() + 1);
+
+        vm.startPrank(borrower);
+        base.approve(address(market), type(uint256).max);
+        market.repay(type(uint256).max);
+        vm.stopPrank();
+        assertEq(market.borrowBalanceOf(borrower), 0);
+    }
+
+    function test_setMaxPriceAge_onlyAdmin() public {
+        vm.prank(guardian);
+        vm.expectRevert("not admin");
+        market.setMaxPriceAge(2 hours);
+
+        vm.prank(admin);
+        market.setMaxPriceAge(2 hours);
+        assertEq(market.maxPriceAge(), 2 hours);
+    }
 }

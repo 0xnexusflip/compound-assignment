@@ -23,6 +23,9 @@ contract LendingMarket {
 
     uint256 internal constant FACTOR = 1e18;
 
+    /// @dev Oldest oracle answer the market accepts when no explicit maximum age is configured.
+    uint256 internal constant DEFAULT_MAX_PRICE_AGE = 1 days;
+
     // -------------------------------------------------------------------------------------------
     // Storage
     // -------------------------------------------------------------------------------------------
@@ -59,6 +62,11 @@ contract LendingMarket {
 
     bool private _initialized;
 
+    // --- appended after the live layout, never reorder the slots above ---
+
+    /// @dev Zero means DEFAULT_MAX_PRICE_AGE, so an upgraded proxy is protected without a reinitializer.
+    uint256 private _maxPriceAge;
+
     // -------------------------------------------------------------------------------------------
     // Events
     // -------------------------------------------------------------------------------------------
@@ -73,6 +81,7 @@ contract LendingMarket {
     event OracleUpdated(address indexed newOracle);
     event ParametersUpdated(uint256 collateralFactor, uint256 liquidationIncentive, uint256 borrowRate);
     event PausedSet(bool paused);
+    event MaxPriceAgeUpdated(uint256 maxPriceAge);
 
     // -------------------------------------------------------------------------------------------
     // Modifiers
@@ -328,8 +337,15 @@ contract LendingMarket {
 
     /// @notice Collateral price in base-asset terms, 1e18 scaled.
     function getPrice() public view returns (uint256) {
-        (, int256 answer,,,) = oracle.latestRoundData();
+        (, int256 answer,, uint256 updatedAt,) = oracle.latestRoundData();
+        require(answer > 0, "invalid price");
+        require(updatedAt <= block.timestamp && block.timestamp - updatedAt <= maxPriceAge(), "stale price");
         return uint256(answer);
+    }
+
+    /// @notice Oldest oracle answer the market accepts, in seconds.
+    function maxPriceAge() public view returns (uint256) {
+        return _maxPriceAge == 0 ? DEFAULT_MAX_PRICE_AGE : _maxPriceAge;
     }
 
     // -------------------------------------------------------------------------------------------
@@ -348,8 +364,9 @@ contract LendingMarket {
     // Administration
     // -------------------------------------------------------------------------------------------
 
-    function setOracle(address newOracle) external onlyGuardian {
+    function setOracle(address newOracle) external onlyAdmin {
         require(newOracle != address(0), "zero oracle");
+        require(IPriceOracle(newOracle).decimals() == 18, "oracle decimals");
         oracle = IPriceOracle(newOracle);
         emit OracleUpdated(newOracle);
     }
@@ -368,6 +385,12 @@ contract LendingMarket {
         borrowRatePerSecond = borrowRatePerSecond_;
 
         emit ParametersUpdated(collateralFactor_, liquidationIncentive_, borrowRatePerSecond_);
+    }
+
+    function setMaxPriceAge(uint256 maxPriceAge_) external onlyAdmin {
+        require(maxPriceAge_ > 0, "zero max age");
+        _maxPriceAge = maxPriceAge_;
+        emit MaxPriceAgeUpdated(maxPriceAge_);
     }
 
     function setPaused(bool paused_) external onlyGuardian {
