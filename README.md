@@ -186,6 +186,10 @@ Deployment is one timelock transaction: deploy the new `LendingMarket` and call 
 
 Warning: after the upgrade, `borrow`, `withdrawCollateral` and `liquidate` revert while the feed is older than the maximum age. That is the intended fail-closed behavior. Confirm the production feed's heartbeat is below one day before the upgrade, or set a larger age in the same timelock batch.
 
+### Static analysis
+
+Slither (75 detectors, `lib/`, `test/`, `script/` and `mocks/` filtered) reports no High. Its Medium items are triaged as follows. The strict equalities (`amount == owed`, `collateralBalance == 0`, `debt == 0`, `elapsed == 0`) are intentional exact checks on values derived by the same arithmetic. The divide-before-multiply hits are the index math itself and lose at most one wei per step, in the market's favor after F-6. The two inbound-transfer reentrancy flags had no gain path with the listed tokens, and the transfers now run after the state writes. The ignored `roundId` and `answeredInRound` fields are a deliberate choice, since the age check covers staleness for a Chainlink-style feed. Aderyn reports three High items, all in the proxy (Yul `return`, unchecked `delegatecall`, locked ether), which is the expected shape of a proxy and out of scope.
+
 ## Noted, not changed
 
 - `setPaused` also blocks `liquidate` and `withdrawCollateral`. A pause during a price crash shields underwater borrowers and lets bad debt form for suppliers. Compound-style markets pause seizures separately. This is a design decision for the team.
