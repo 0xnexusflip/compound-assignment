@@ -202,7 +202,8 @@ contract LendingMarket {
     // Borrower actions
     // -------------------------------------------------------------------------------------------
 
-    function supplyCollateral(uint256 amount) external whenNotPaused {
+    // Adding collateral only reduces risk, so it stays open while the market is paused.
+    function supplyCollateral(uint256 amount) external {
         require(amount > 0, "zero amount");
 
         _transferIn(collateralToken, amount);

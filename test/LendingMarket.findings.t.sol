@@ -483,4 +483,23 @@ contract LendingMarketFindingsTest is Test {
         market.accrueInterest();
         assertEq(market.supplyBalanceOf(supplier), claimsBefore, "no interest may accrue on bad debt");
     }
+
+    // ---------------------------------------------------------------------------------------
+    // F-11: a pause blocks collateral top-ups
+    // ---------------------------------------------------------------------------------------
+
+    /// @dev Adding collateral only reduces risk, so a paused market must still accept it.
+    function test_supplyCollateral_worksWhilePaused() public {
+        _postCollateral(borrower, 10e18);
+        vm.prank(borrower);
+        market.borrow(15_000e18);
+
+        vm.prank(guardian);
+        market.setPaused(true);
+
+        weth.mint(borrower, 1e18);
+        vm.prank(borrower);
+        market.supplyCollateral(1e18);
+        assertEq(market.collateralBalance(borrower), 11e18);
+    }
 }
