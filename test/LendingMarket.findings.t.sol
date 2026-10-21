@@ -245,4 +245,43 @@ contract LendingMarketFindingsTest is Test {
 
         assertEq(falseMarket.supplyBalanceOf(supplier), 0);
     }
+
+    // ---------------------------------------------------------------------------------------
+    // F-6: principal rounds in the user's favor on withdraw and borrow
+    // ---------------------------------------------------------------------------------------
+
+    /// @dev Once the supply index is above 1e18, withdrawing 1 wei converts to 0 principal, so the
+    ///      supplier's recorded balance never moves while base leaves the market.
+    function test_withdraw_roundsPrincipalAgainstTheCaller() public {
+        _postCollateral(borrower, 10e18);
+        vm.prank(borrower);
+        market.borrow(10_000e18);
+
+        vm.warp(block.timestamp + 365 days);
+        market.accrueInterest();
+        assertGt(market.baseSupplyIndex(), FACTOR);
+
+        uint256 principalBefore = market.supplyPrincipal(supplier);
+        vm.prank(supplier);
+        market.withdraw(1);
+
+        assertLt(market.supplyPrincipal(supplier), principalBefore, "withdraw must burn at least 1 principal");
+    }
+
+    /// @dev Same shape on the borrow side: 1 wei of debt converts to 0 principal, so the borrower
+    ///      receives base with no recorded debt and no collateral.
+    function test_borrow_roundsPrincipalAgainstTheCaller() public {
+        _postCollateral(borrower, 10e18);
+        vm.prank(borrower);
+        market.borrow(10_000e18);
+
+        vm.warp(block.timestamp + 365 days);
+        wethOracle.setPrice(2_000e18);
+        market.accrueInterest();
+
+        address freeloader = makeAddr("freeloader");
+        vm.prank(freeloader);
+        vm.expectRevert("would be undercollateralized");
+        market.borrow(1);
+    }
 }

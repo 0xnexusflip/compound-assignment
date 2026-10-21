@@ -179,7 +179,7 @@ contract LendingMarket {
         require(amount > 0, "zero amount");
         accrueInterest();
 
-        uint256 principal = _principalForSupply(amount);
+        uint256 principal = _principalForSupplyRoundUp(amount);
         require(supplyPrincipal[msg.sender] >= principal, "insufficient balance");
 
         supplyPrincipal[msg.sender] -= principal;
@@ -224,7 +224,7 @@ contract LendingMarket {
         require(amount > 0, "zero amount");
         accrueInterest();
 
-        uint256 principal = _principalForBorrow(amount);
+        uint256 principal = _principalForBorrowRoundUp(amount);
         borrowPrincipal[msg.sender] += principal;
         totalBorrowPrincipal += principal;
 
@@ -359,6 +359,16 @@ contract LendingMarket {
 
     function _principalForSupply(uint256 amount) internal view returns (uint256) {
         return (amount * FACTOR) / baseSupplyIndex;
+    }
+
+    /// @notice Rounds against the caller. Used where principal leaves the caller or debt is created.
+    function _principalForBorrowRoundUp(uint256 amount) internal view returns (uint256) {
+        return (amount * FACTOR + baseBorrowIndex - 1) / baseBorrowIndex;
+    }
+
+    /// @notice Rounds against the caller. Used where principal leaves the caller or debt is created.
+    function _principalForSupplyRoundUp(uint256 amount) internal view returns (uint256) {
+        return (amount * FACTOR + baseSupplyIndex - 1) / baseSupplyIndex;
     }
 
     /// @notice Pulls tokens from the caller and rejects a false return value as well as a revert.
