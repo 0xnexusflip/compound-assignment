@@ -173,12 +173,12 @@ contract LendingMarket {
         require(amount > 0, "zero amount");
         accrueInterest();
 
-        _transferIn(baseToken, amount);
-
         uint256 principal = _principalForSupply(amount);
         require(principal > 0, "zero principal");
         supplyPrincipal[msg.sender] += principal;
         totalSupplyPrincipal += principal;
+
+        _transferIn(baseToken, amount);
 
         emit Supply(msg.sender, amount);
     }
@@ -206,10 +206,10 @@ contract LendingMarket {
     function supplyCollateral(uint256 amount) external {
         require(amount > 0, "zero amount");
 
-        _transferIn(collateralToken, amount);
-
         collateralBalance[msg.sender] += amount;
         totalCollateral += amount;
+
+        _transferIn(collateralToken, amount);
 
         emit SupplyCollateral(msg.sender, amount);
     }
@@ -255,10 +255,10 @@ contract LendingMarket {
         // and can strand one unit that no later call can clear.
         uint256 principal = amount == owed ? borrowPrincipal[msg.sender] : _principalForBorrow(amount);
 
-        _transferIn(baseToken, amount);
-
         borrowPrincipal[msg.sender] -= principal;
         totalBorrowPrincipal -= principal;
+
+        _transferIn(baseToken, amount);
 
         emit Repay(msg.sender, amount);
     }
