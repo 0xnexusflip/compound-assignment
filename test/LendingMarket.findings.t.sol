@@ -637,4 +637,32 @@ contract LendingMarketFindingsTest is Test {
         assertEq(market.borrowBalanceOf(borrower), 0);
         assertEq(market.badDebt(), 0);
     }
+
+    // ---------------------------------------------------------------------------------------
+    // F-16: single-step admin transfer
+    // ---------------------------------------------------------------------------------------
+
+    /// @dev A typo in setAdmin handed the market to a dead address with no recovery. The nominee
+    ///      now has to accept, and the current admin stays in control until it does.
+    function test_setAdmin_requiresAcceptance() public {
+        address newAdmin = makeAddr("newAdmin");
+
+        vm.prank(admin);
+        market.setAdmin(newAdmin);
+        assertEq(market.admin(), admin, "admin must not change before acceptance");
+        assertEq(market.pendingAdmin(), newAdmin);
+
+        vm.prank(guardian);
+        vm.expectRevert("not pending admin");
+        market.acceptAdmin();
+
+        vm.prank(newAdmin);
+        market.acceptAdmin();
+        assertEq(market.admin(), newAdmin);
+        assertEq(market.pendingAdmin(), address(0));
+
+        vm.prank(admin);
+        vm.expectRevert("not admin");
+        market.setPauseGuardian(guardian);
+    }
 }

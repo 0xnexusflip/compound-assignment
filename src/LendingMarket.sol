@@ -70,6 +70,9 @@ contract LendingMarket {
     /// @notice Debt written off at liquidation because no collateral was left to back it, in base units.
     uint256 public badDebt;
 
+    /// @notice Admin nominated by setAdmin, takes over when it calls acceptAdmin.
+    address public pendingAdmin;
+
     // -------------------------------------------------------------------------------------------
     // Events
     // -------------------------------------------------------------------------------------------
@@ -85,6 +88,8 @@ contract LendingMarket {
     event ParametersUpdated(uint256 collateralFactor, uint256 liquidationIncentive, uint256 borrowRate);
     event PausedSet(bool paused);
     event PauseGuardianUpdated(address indexed newGuardian);
+    event AdminTransferStarted(address indexed newAdmin);
+    event AdminTransferred(address indexed newAdmin);
     event MaxPriceAgeUpdated(uint256 maxPriceAge);
     event BadDebtWrittenOff(address indexed borrower, uint256 amount);
 
@@ -464,8 +469,17 @@ contract LendingMarket {
         emit PauseGuardianUpdated(newGuardian);
     }
 
+    // Two steps, so a wrong address cannot take the market with it. The nominee must prove it can sign.
     function setAdmin(address newAdmin) external onlyAdmin {
         require(newAdmin != address(0), "zero admin");
-        admin = newAdmin;
+        pendingAdmin = newAdmin;
+        emit AdminTransferStarted(newAdmin);
+    }
+
+    function acceptAdmin() external {
+        require(msg.sender == pendingAdmin, "not pending admin");
+        admin = pendingAdmin;
+        pendingAdmin = address(0);
+        emit AdminTransferred(admin);
     }
 }
