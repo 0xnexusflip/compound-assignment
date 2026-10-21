@@ -61,7 +61,7 @@ See `script/Deploy.s.sol` for the current staging configuration.
 
 ## Findings
 
-Eleven defects, numbered in the order I found them. Each one has a test in `test/LendingMarket.findings.t.sol` that fails against the implementation that is live today and passes against the fixed one. `test/LendingMarket.upgrade.t.sol` reproduces the two worst ones on the live code, upgrades the proxy, and shows them closed. `test/invariant/` holds four stateful properties checked under random sequences of every user action, time, price moves and donations. Totals equal account sums. Collateral is fully backed. Supplier claims are covered by cash plus debt. The supply index never outruns the borrow index. All four hold over 2,000 runs at depth 100, which is 200,000 calls each.
+Fourteen defects, numbered in the order I found them. F-12 to F-14 came out of a second review pass over my own fixes. Each one has a test in `test/LendingMarket.findings.t.sol` that fails against the implementation that is live today and passes against the fixed one. `test/LendingMarket.upgrade.t.sol` reproduces the two worst ones on the live code, upgrades the proxy, and shows them closed. `test/invariant/` holds four stateful properties checked under random sequences of every user action, time, price moves and donations. Totals equal account sums. Collateral is fully backed. Supplier claims are covered by cash plus debt. The supply index never outruns the borrow index. All four hold over 2,000 runs at depth 100, which is 200,000 calls each.
 
 | ID | Severity | Title | Where |
 |---|---|---|---|
@@ -76,6 +76,9 @@ Eleven defects, numbered in the order I found them. Each one has a test in `test
 | F-9 | Low | The pause guardian can also unpause | `setPaused` |
 | F-10 | Medium | Bad debt keeps accruing interest to suppliers | `liquidate`, `accrueInterest` |
 | F-11 | Low | A pause blocks collateral top-ups | `supplyCollateral` |
+| F-12 | Medium | The bad debt write-off could be dodged or over-applied | `liquidate` |
+| F-13 | Medium | Collateral factor times incentive is unbounded | `setParameters` |
+| F-14 | Medium | A compromised guardian cannot be replaced | `setPauseGuardian` |
 
 ### F-1 Critical. Liquidation seizes collateral in base units
 
@@ -159,7 +162,7 @@ When a liquidation exhausts the collateral, the uncovered remainder of the debt 
 
 **Exploit.** Two suppliers hold 1,000,000 and 100,000. A borrower with 10 WETH owes 15,000 when WETH falls to 1,000. The liquidator takes the 10 WETH for 9,090.91 and 5,909.09 of debt remains with zero collateral. Five years later that debt reads 7,386.36 and supplier claims exceed the base held by the same amount. The first supplier withdraws in full. The second cannot.
 
-**Fix.** When a liquidation leaves no collateral, the remaining debt is zeroed and subtracted from the borrow total. It is added to a new `badDebt` slot appended after `_maxPriceAge`, and an event records it. The loss is visible and stops compounding. Who absorbs it, suppliers pro rata or a reserve, is a governance decision I did not make.
+**Fix.** When a liquidation leaves no collateral, the remaining debt is zeroed and subtracted from the borrow total. It is added to a new `badDebt` slot appended after `_maxPriceAge`, and an event records it. The loss is visible and stops compounding. Who absorbs it, suppliers pro rata or a reserve, is a governance decision I did not make. See F-12 for the close rule that makes the write-off reliable.
 
 **Test.** `test_liquidate_writesOffUncoveredDebt`.
 
@@ -170,6 +173,30 @@ When a liquidation exhausts the collateral, the uncovered remainder of the debt 
 **Fix.** `supplyCollateral` works while paused. `liquidate` stays paused, see the note below.
 
 **Test.** `test_supplyCollateral_worksWhilePaused`.
+
+### F-12 Medium. The bad debt write-off could be dodged or over-applied
+
+My first F-10 fix had two holes, found by a second review pass over the fixed code. The write-off fired only at exactly zero collateral. A liquidator could seize all but one wei and keep the uncovered debt alive and earning, then collect that interest as a supplier. The cap branch also always paid the full incentive. With 10 WETH at 1,600 (16,000 of value) against 15,000 of debt, the liquidator paid 14,545 for all of it. 455 was written off although the collateral covered the debt.
+
+**Fix.** The close rule now keys on value, not on a requested amount. If the collateral is worth less than the debt plus the incentive, the position closes in full whatever was requested. While the collateral still covers the debt, the liquidator pays the whole debt and gets the collateral, so nothing is written off. Only when the collateral is worth less than the debt is the incentive taken from the uncovered remainder, and that remainder is written off. The fuzz property covers all three regions.
+
+**Tests.** `test_liquidate_solventCollateralPaysWholeDebt`, `test_liquidate_underwaterPositionCannotBeLeftWithDust`, `testFuzz_liquidate_seizeIsWorthRepaidValuePlusIncentive`, `test_upgrade_orphanDebtCanBeWrittenOff`.
+
+### F-13 Medium. Collateral factor times incentive is unbounded
+
+`setParameters` bounded the factor at 100 percent and the incentive at or above par, but not their product. With 0.95 and 1.10, each valid alone, a position at the borrow limit is worth less than its debt plus the incentive. A borrower could borrow to the limit, wait one block, and liquidate itself from a second address. It would pocket the gap from the suppliers on every cycle. The staging pair, 0.80 and 1.10, is safe.
+
+**Fix.** `setParameters` requires `collateralFactor * liquidationIncentive <= 1e36`.
+
+**Test.** `test_setParameters_revertsWhenFactorTimesIncentiveAbovePar`.
+
+### F-14 Medium. A compromised guardian cannot be replaced
+
+Only `initialize` wrote `pauseGuardian`. A compromised guardian key could re-pause the market in the block after every admin unpause, and the only way out was a timelocked upgrade.
+
+**Fix.** `setPauseGuardian(address)`, admin only, with an event.
+
+**Test.** `test_setPauseGuardian_adminCanReplaceGuardian`.
 
 ## Shipping it to the live proxy
 
@@ -183,7 +210,7 @@ forge inspect LendingMarket storage-layout         # the fixed code
 
 `test/LendingMarket.upgrade.t.sol` deploys the live implementation behind the proxy, opens real positions, and accrues a year of interest. It then calls `upgradeTo` and asserts that every balance, index and parameter survives and that each fix is active at once.
 
-Deployment is one timelock transaction: deploy the new `LendingMarket` and call `upgradeTo` on the proxy. Optionally follow with `setMaxPriceAge` tuned to the production feed's heartbeat. Every existing external function signature is unchanged. Three functions were added, `maxPriceAge()`, `setMaxPriceAge(uint256)` and the `badDebt()` getter, plus two events.
+Deployment is one timelock transaction: deploy the new `LendingMarket` and call `upgradeTo` on the proxy. Optionally follow with `setMaxPriceAge` tuned to the production feed's heartbeat. If F-1 was ever exploited on the live market, accounts with debt and no collateral exist. One `liquidate(account, 1)` call per such account writes that debt off, costs the caller nothing, and is rehearsed in `test_upgrade_orphanDebtCanBeWrittenOff`. Every existing external function signature is unchanged. Four functions were added, `maxPriceAge()`, `setMaxPriceAge(uint256)`, `setPauseGuardian(address)` and the `badDebt()` getter, plus three events.
 
 Warning: after the upgrade, `borrow`, `withdrawCollateral` and `liquidate` revert while the feed is older than the maximum age. That is the intended fail-closed behavior. Confirm the production feed's heartbeat is below one day before the upgrade, or set a larger age in the same timelock batch.
 
@@ -197,8 +224,8 @@ Warning: after the upgrade, `borrow`, `withdrawCollateral` and `liquidate` rever
 | `supplyCollateral` | 73,549 | 73,415 | -134 |
 | `borrow` | 56,827 | 59,314 | +2,487 |
 | `repay` | 11,255 | 11,339 | +84 |
-| `withdrawCollateral` | 10,217 | 13,305 | +3,088 |
-| `liquidate` | 42,106 | 41,898 | -208 |
+| `withdrawCollateral` | 10,217 | 13,327 | +3,110 |
+| `liquidate` | 42,106 | 42,315 | +209 |
 | `withdraw` | 27,930 | 28,148 | +218 |
 
 The two visible increases are the oracle age check with the round-up on `borrow`, and the accrual that `withdrawCollateral` was missing (F-4).
@@ -214,7 +241,7 @@ Slither (75 detectors, `lib/`, `test/`, `script/` and `mocks/` filtered) reports
 - `initialize` applies none of the checks the setters enforce. It never runs again on the live proxy, so this only matters for a new market.
 - One `collateralFactor` serves as both the borrow limit and the liquidation threshold. A borrower at the limit is liquidatable after one second of interest. A separate, higher liquidation threshold is standard.
 - `setAdmin` is a single step with no event. A typo hands the market to a dead address. A two-step transfer is the standard fix. The proxy admin slot does not move with the market admin.
-- `setParameters` allows a collateral factor of 100 percent and an unbounded liquidation incentive. Both are admin inputs behind the timelock, so I left the bounds to governance.
+- `setParameters` still allows a collateral factor of 100 percent with an incentive of exactly par. That is an admin input behind the timelock.
 - There is no close factor. A liquidator may repay 100 percent of a position. Standard markets cap this near 50 percent.
 - `initialize` is callable on the raw implementation contract. It has no `delegatecall` or `selfdestruct`, so the proxy is not affected. A constructor that sets `_initialized` would close it.
 - `supplyCollateral` credits `amount`, not the received balance, so a fee-on-transfer collateral would be over-credited. No such token is listed.
@@ -226,4 +253,4 @@ I prioritized the paths that move value against a price, in this order: liquidat
 
 I am unsure whether a one-day default price age fits the production feed. With more time I would read the heartbeat of the feed onchain and run the invariant suite under Medusa for hours instead of seconds.
 
-AI tooling was used throughout. All fixes were validated with manual passes by me. One suggestion I rejected: adding a `reinitialize` step to set the maximum price age during the upgrade. The proxy has no `upgradeToAndCall`, so that leaves a window between two transactions in which the market runs unprotected. The zero-means-default fallback removes the window.
+AI tooling was used throughout. All fixes were validated with manual passes by me. A second review pass over my own fixes found the two holes in F-10, which I fixed as F-12. One suggestion I rejected: adding a `reinitialize` step to set the maximum price age during the upgrade. The proxy has no `upgradeToAndCall`, so that leaves a window between two transactions in which the market runs unprotected. The zero-means-default fallback removes the window.
