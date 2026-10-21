@@ -694,4 +694,46 @@ contract LendingMarketFindingsTest is Test {
         vm.expectRevert("already initialized");
         impl.initialize(admin, guardian, address(wethOracle), address(base), address(weth), 0.8e18, 1.1e18, 0);
     }
+
+    // ---------------------------------------------------------------------------------------
+    // F-18: one factor served as borrow limit and liquidation threshold
+    // ---------------------------------------------------------------------------------------
+
+    /// @dev 10 WETH backs 15,000 against a 16,000 limit. With a 0.90 threshold the position is
+    ///      safe from liquidation down to 1,666, instead of at the first second of interest.
+    function test_setLiquidationThreshold_givesBufferAboveBorrowLimit() public {
+        _postCollateral(borrower, 10e18);
+        vm.prank(borrower);
+        market.borrow(15_000e18);
+        assertEq(market.liquidationThreshold(), 0.8e18, "defaults to the collateral factor");
+
+        vm.prank(admin);
+        market.setLiquidationThreshold(0.9e18);
+
+        wethOracle.setPrice(1_800e18); // 14,400 of borrowing power, 16,200 of liquidation cover
+        assertFalse(market.isHealthy(borrower));
+        assertFalse(market.isLiquidatable(borrower));
+        _fundLiquidator(1_000e18);
+        vm.prank(liquidator);
+        vm.expectRevert("borrower is healthy");
+        market.liquidate(borrower, 1_000e18);
+
+        wethOracle.setPrice(1_650e18); // 14,850 of liquidation cover against 15,000, partial close still possible
+        assertTrue(market.isLiquidatable(borrower));
+        vm.prank(liquidator);
+        market.liquidate(borrower, 1_000e18);
+        assertGt(weth.balanceOf(liquidator), 0);
+    }
+
+    function test_setLiquidationThreshold_bounds() public {
+        vm.startPrank(admin);
+        vm.expectRevert("threshold below cf");
+        market.setLiquidationThreshold(0.79e18);
+        vm.expectRevert("threshold too high");
+        market.setLiquidationThreshold(1.01e18);
+        market.setLiquidationThreshold(0.85e18);
+        vm.expectRevert("cf above threshold");
+        market.setParameters(0.86e18, 1.1e18, RATE_PER_SECOND);
+        vm.stopPrank();
+    }
 }

@@ -73,6 +73,9 @@ contract LendingMarket {
     /// @notice Admin nominated by setAdmin, takes over when it calls acceptAdmin.
     address public pendingAdmin;
 
+    /// @dev Zero means collateralFactor, so an upgraded proxy keeps the live liquidation rule until set.
+    uint256 private _liquidationThreshold;
+
     // -------------------------------------------------------------------------------------------
     // Events
     // -------------------------------------------------------------------------------------------
@@ -90,6 +93,7 @@ contract LendingMarket {
     event PauseGuardianUpdated(address indexed newGuardian);
     event AdminTransferStarted(address indexed newAdmin);
     event AdminTransferred(address indexed newAdmin);
+    event LiquidationThresholdUpdated(uint256 liquidationThreshold);
     event MaxPriceAgeUpdated(uint256 maxPriceAge);
     event BadDebtWrittenOff(address indexed borrower, uint256 amount);
 
@@ -294,7 +298,7 @@ contract LendingMarket {
         require(repayAmount > 0, "zero amount");
         accrueInterest();
 
-        require(!isHealthy(borrower), "borrower is healthy");
+        require(isLiquidatable(borrower), "borrower is healthy");
 
         uint256 owed = borrowBalanceOf(borrower);
         if (repayAmount > owed) repayAmount = owed;
@@ -385,6 +389,21 @@ contract LendingMarket {
         return borrowingPower >= debt;
     }
 
+    /// @notice True when the debt exceeds what the liquidation threshold allows on the collateral.
+    /// @dev Above collateralFactor, this gives a borrower at the limit a buffer before liquidation.
+    function isLiquidatable(address account) public view returns (bool) {
+        uint256 debt = borrowBalanceOf(account);
+        if (debt == 0) return false;
+
+        uint256 collateralValue = (collateralBalance[account] * getPrice()) / FACTOR;
+        return (collateralValue * liquidationThreshold()) / FACTOR < debt;
+    }
+
+    /// @notice Collateral value fraction above which a position cannot be liquidated, 1e18 scaled.
+    function liquidationThreshold() public view returns (uint256) {
+        return _liquidationThreshold == 0 ? collateralFactor : _liquidationThreshold;
+    }
+
     /// @notice Collateral price in base-asset terms, 1e18 scaled.
     function getPrice() public view returns (uint256) {
         (, int256 answer,, uint256 updatedAt,) = oracle.latestRoundData();
@@ -452,6 +471,7 @@ contract LendingMarket {
         // A position at the borrow limit must still be able to pay the incentive out of its own
         // collateral, or a borrower can liquidate itself at a profit against the suppliers.
         require(collateralFactor_ * liquidationIncentive_ <= FACTOR * FACTOR, "cf times incentive above par");
+        require(_liquidationThreshold == 0 || collateralFactor_ <= _liquidationThreshold, "cf above threshold");
 
         accrueInterest();
 
@@ -473,6 +493,13 @@ contract LendingMarket {
         if (!paused_) require(msg.sender == admin, "not admin");
         paused = paused_;
         emit PausedSet(paused_);
+    }
+
+    function setLiquidationThreshold(uint256 liquidationThreshold_) external onlyAdmin {
+        require(liquidationThreshold_ >= collateralFactor, "threshold below cf");
+        require(liquidationThreshold_ <= FACTOR, "threshold too high");
+        _liquidationThreshold = liquidationThreshold_;
+        emit LiquidationThresholdUpdated(liquidationThreshold_);
     }
 
     function setPauseGuardian(address newGuardian) external onlyAdmin {

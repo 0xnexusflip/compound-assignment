@@ -108,6 +108,7 @@ contract LendingMarketUpgradeTest is Test {
         assertEq(market.maxPriceAge(), 1 days);
         assertEq(market.badDebt(), 0);
         assertEq(market.pendingAdmin(), address(0));
+        assertEq(market.liquidationThreshold(), 0.8e18);
     }
 
     function test_upgrade_cannotBeReinitialized() public {
