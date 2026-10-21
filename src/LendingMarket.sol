@@ -166,7 +166,7 @@ contract LendingMarket {
         require(amount > 0, "zero amount");
         accrueInterest();
 
-        baseToken.transferFrom(msg.sender, address(this), amount);
+        _transferIn(baseToken, amount);
 
         uint256 principal = _principalForSupply(amount);
         supplyPrincipal[msg.sender] += principal;
@@ -185,7 +185,7 @@ contract LendingMarket {
         supplyPrincipal[msg.sender] -= principal;
         totalSupplyPrincipal -= principal;
 
-        baseToken.transfer(msg.sender, amount);
+        _transferOut(baseToken, amount);
 
         emit Withdraw(msg.sender, amount);
     }
@@ -197,7 +197,7 @@ contract LendingMarket {
     function supplyCollateral(uint256 amount) external whenNotPaused {
         require(amount > 0, "zero amount");
 
-        collateralToken.transferFrom(msg.sender, address(this), amount);
+        _transferIn(collateralToken, amount);
 
         collateralBalance[msg.sender] += amount;
         totalCollateral += amount;
@@ -215,7 +215,7 @@ contract LendingMarket {
 
         require(isHealthy(msg.sender), "would be undercollateralized");
 
-        collateralToken.transfer(msg.sender, amount);
+        _transferOut(collateralToken, amount);
 
         emit WithdrawCollateral(msg.sender, amount);
     }
@@ -230,7 +230,7 @@ contract LendingMarket {
 
         require(isHealthy(msg.sender), "would be undercollateralized");
 
-        baseToken.transfer(msg.sender, amount);
+        _transferOut(baseToken, amount);
 
         emit Borrow(msg.sender, amount);
     }
@@ -244,7 +244,7 @@ contract LendingMarket {
 
         uint256 principal = _principalForBorrow(amount);
 
-        baseToken.transferFrom(msg.sender, address(this), amount);
+        _transferIn(baseToken, amount);
 
         borrowPrincipal[msg.sender] -= principal;
         totalBorrowPrincipal -= principal;
@@ -290,8 +290,8 @@ contract LendingMarket {
         collateralBalance[borrower] -= seizeAmount;
         totalCollateral -= seizeAmount;
 
-        baseToken.transferFrom(msg.sender, address(this), repayAmount);
-        collateralToken.transfer(msg.sender, seizeAmount);
+        _transferIn(baseToken, repayAmount);
+        _transferOut(collateralToken, seizeAmount);
 
         emit Liquidate(msg.sender, borrower, repayAmount, seizeAmount);
     }
@@ -359,6 +359,16 @@ contract LendingMarket {
 
     function _principalForSupply(uint256 amount) internal view returns (uint256) {
         return (amount * FACTOR) / baseSupplyIndex;
+    }
+
+    /// @notice Pulls tokens from the caller and rejects a false return value as well as a revert.
+    function _transferIn(IERC20 token, uint256 amount) internal {
+        require(token.transferFrom(msg.sender, address(this), amount), "transfer failed");
+    }
+
+    /// @notice Pushes tokens to the caller and rejects a false return value as well as a revert.
+    function _transferOut(IERC20 token, uint256 amount) internal {
+        require(token.transfer(msg.sender, amount), "transfer failed");
     }
 
     // -------------------------------------------------------------------------------------------

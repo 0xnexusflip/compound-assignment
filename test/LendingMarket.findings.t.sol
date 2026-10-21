@@ -7,6 +7,7 @@ import {LendingMarket} from "../src/LendingMarket.sol";
 import {TransparentUpgradeableProxy} from "../src/TransparentUpgradeableProxy.sol";
 import {MockERC20} from "../src/mocks/MockERC20.sol";
 import {MockOracle} from "../src/mocks/MockOracle.sol";
+import {FalseReturnERC20} from "./mocks/FalseReturnERC20.sol";
 
 /**
  * @notice One test per finding in the README. Each test fails against the implementation that is
@@ -219,5 +220,29 @@ contract LendingMarketFindingsTest is Test {
 
         market.accrueInterest();
         assertTrue(market.isHealthy(borrower), "position must still be healthy after accrual");
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // F-5: token transfer return values are ignored
+    // ---------------------------------------------------------------------------------------
+
+    /// @dev With a base asset that signals failure by returning false, a supplier is credited for
+    ///      tokens that never arrived and can withdraw them against everyone else's deposits.
+    function test_supply_revertsWhenTransferFromReturnsFalse() public {
+        FalseReturnERC20 falseBase = new FalseReturnERC20();
+        LendingMarket impl = new LendingMarket();
+        bytes memory initData = abi.encodeCall(
+            LendingMarket.initialize,
+            (admin, guardian, address(wethOracle), address(falseBase), address(weth), 0.80e18, 1.10e18, RATE_PER_SECOND)
+        );
+        LendingMarket falseMarket =
+            LendingMarket(address(new TransparentUpgradeableProxy(address(impl), admin, initData)));
+
+        // Supplier holds nothing and approved nothing.
+        vm.prank(supplier);
+        vm.expectRevert("transfer failed");
+        falseMarket.supply(1_000e18);
+
+        assertEq(falseMarket.supplyBalanceOf(supplier), 0);
     }
 }
