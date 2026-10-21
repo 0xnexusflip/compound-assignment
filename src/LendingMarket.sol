@@ -173,13 +173,17 @@ contract LendingMarket {
         uint256 borrowsBefore = presentValueBorrow(totalBorrowPrincipal);
         uint256 suppliesBefore = presentValueSupply(totalSupplyPrincipal);
 
-        baseBorrowIndex += (baseBorrowIndex * interest) / FACTOR;
+        uint256 deltaBorrowIndex = (baseBorrowIndex * interest) / FACTOR;
+        baseBorrowIndex += deltaBorrowIndex;
 
         if (suppliesBefore > 0) {
+            // Suppliers are credited from the debt growth borrowers actually incur, never from the
+            // unrounded product, so claims can never exceed cash plus debt by even a wei.
+            uint256 debtGrowth = (totalBorrowPrincipal * deltaBorrowIndex) / FACTOR;
             // Donated base lets borrows exceed supplies. Only the supplied value earns, so the supply
             // index can never grow faster than the borrow index and cannot be inflated by a tiny supplier.
-            uint256 earning = borrowsBefore > suppliesBefore ? suppliesBefore : borrowsBefore;
-            uint256 accruedToSuppliers = (earning * interest) / FACTOR;
+            uint256 accruedToSuppliers =
+                borrowsBefore > suppliesBefore ? (debtGrowth * suppliesBefore) / borrowsBefore : debtGrowth;
             baseSupplyIndex += (baseSupplyIndex * accruedToSuppliers) / suppliesBefore;
         }
 
