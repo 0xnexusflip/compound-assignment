@@ -61,7 +61,7 @@ See `script/Deploy.s.sol` for the current staging configuration.
 
 ## Findings
 
-Eleven defects, numbered in the order I found them. Each one has a test in `test/LendingMarket.findings.t.sol` that fails against the implementation that is live today and passes against the fixed one. `test/LendingMarket.upgrade.t.sol` reproduces the two worst ones on the live code, upgrades the proxy, and shows them closed. `test/invariant/` holds four stateful properties checked under random sequences of every user action, time, price moves and donations. Totals equal account sums. Collateral is fully backed. Supplier claims are covered by cash plus debt. The supply index never outruns the borrow index.
+Eleven defects, numbered in the order I found them. Each one has a test in `test/LendingMarket.findings.t.sol` that fails against the implementation that is live today and passes against the fixed one. `test/LendingMarket.upgrade.t.sol` reproduces the two worst ones on the live code, upgrades the proxy, and shows them closed. `test/invariant/` holds four stateful properties checked under random sequences of every user action, time, price moves and donations. Totals equal account sums. Collateral is fully backed. Supplier claims are covered by cash plus debt. The supply index never outruns the borrow index. All four hold over 2,000 runs at depth 100, which is 200,000 calls each.
 
 | ID | Severity | Title | Where |
 |---|---|---|---|
