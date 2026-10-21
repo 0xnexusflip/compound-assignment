@@ -197,4 +197,27 @@ contract LendingMarketFindingsTest is Test {
         market.setMaxPriceAge(2 hours);
         assertEq(market.maxPriceAge(), 2 hours);
     }
+
+    // ---------------------------------------------------------------------------------------
+    // F-4: withdrawCollateral checks health against unaccrued debt
+    // ---------------------------------------------------------------------------------------
+
+    /// @dev 10 WETH backs a 15,000 borrow. After a year the debt is 15,750, which needs 9.84 WETH
+    ///      of collateral. Without accrual the check still sees 15,000 and lets 0.5 WETH leave,
+    ///      which leaves the position underwater the moment anyone accrues.
+    function test_withdrawCollateral_accruesBeforeHealthCheck() public {
+        _postCollateral(borrower, 10e18);
+        vm.prank(borrower);
+        market.borrow(15_000e18);
+
+        vm.warp(block.timestamp + 365 days);
+        wethOracle.setPrice(2_000e18);
+
+        vm.prank(borrower);
+        vm.expectRevert("would be undercollateralized");
+        market.withdrawCollateral(0.5e18);
+
+        market.accrueInterest();
+        assertTrue(market.isHealthy(borrower), "position must still be healthy after accrual");
+    }
 }
