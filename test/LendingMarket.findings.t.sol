@@ -114,8 +114,9 @@ contract LendingMarketFindingsTest is Test {
         assertEq(weth.balanceOf(liquidator), 10e18);
         assertApproxEqAbs(paid, uint256(10e18 * 1_000e18) / uint256(1_100_000_000_000_000_000), 1e6);
         assertEq(market.collateralBalance(borrower), 0);
-        // The uncovered remainder stays on the books as bad debt rather than being gifted away.
-        assertApproxEqAbs(market.borrowBalanceOf(borrower), 15_000e18 - paid, 1e6);
+        // The uncovered remainder is written off and recorded rather than being gifted away (F-10).
+        assertEq(market.borrowBalanceOf(borrower), 0);
+        assertApproxEqAbs(market.badDebt(), 15_000e18 - paid, 1e6);
     }
 
     // ---------------------------------------------------------------------------------------
@@ -454,5 +455,32 @@ contract LendingMarketFindingsTest is Test {
         uint256 seizedValue = (seized * price) / FACTOR;
         uint256 paidValue = (paid * uint256(1.1e18)) / FACTOR;
         assertApproxEqAbs(seizedValue, paidValue, price / FACTOR + 2);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // F-10: bad debt keeps accruing interest to suppliers
+    // ---------------------------------------------------------------------------------------
+
+    /// @dev After a liquidation exhausts the collateral, the uncovered debt stays in the borrow
+    ///      total and keeps paying interest to suppliers that nobody will ever pay. The hole grows
+    ///      every second and the last supplier out eats all of it.
+    function test_liquidate_writesOffUncoveredDebt() public {
+        _postCollateral(borrower, 10e18);
+        vm.prank(borrower);
+        market.borrow(15_000e18);
+
+        wethOracle.setPrice(1_000e18); // 10,000 of collateral against 15,000 of debt
+        _fundLiquidator(15_000e18);
+        vm.prank(liquidator);
+        market.liquidate(borrower, 15_000e18);
+
+        assertEq(market.collateralBalance(borrower), 0);
+        assertEq(market.borrowBalanceOf(borrower), 0, "uncovered debt must be written off");
+        assertApproxEqAbs(market.badDebt(), 15_000e18 - 9_090_909_090_909_090_909_090, 1e6);
+
+        uint256 claimsBefore = market.supplyBalanceOf(supplier);
+        vm.warp(block.timestamp + 5 * 365 days);
+        market.accrueInterest();
+        assertEq(market.supplyBalanceOf(supplier), claimsBefore, "no interest may accrue on bad debt");
     }
 }

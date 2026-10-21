@@ -67,6 +67,9 @@ contract LendingMarket {
     /// @dev Zero means DEFAULT_MAX_PRICE_AGE, so an upgraded proxy is protected without a reinitializer.
     uint256 private _maxPriceAge;
 
+    /// @notice Debt written off at liquidation because no collateral was left to back it, in base units.
+    uint256 public badDebt;
+
     // -------------------------------------------------------------------------------------------
     // Events
     // -------------------------------------------------------------------------------------------
@@ -82,6 +85,7 @@ contract LendingMarket {
     event ParametersUpdated(uint256 collateralFactor, uint256 liquidationIncentive, uint256 borrowRate);
     event PausedSet(bool paused);
     event MaxPriceAgeUpdated(uint256 maxPriceAge);
+    event BadDebtWrittenOff(address indexed borrower, uint256 amount);
 
     // -------------------------------------------------------------------------------------------
     // Modifiers
@@ -295,6 +299,16 @@ contract LendingMarket {
 
         collateralBalance[borrower] -= seizeAmount;
         totalCollateral -= seizeAmount;
+
+        // With no collateral left, the remainder can never be collected. Leaving it in the borrow
+        // total would keep paying suppliers interest on it, so it is written off and recorded.
+        if (collateralBalance[borrower] == 0 && borrowPrincipal[borrower] > 0) {
+            uint256 writtenOff = borrowBalanceOf(borrower);
+            totalBorrowPrincipal -= borrowPrincipal[borrower];
+            borrowPrincipal[borrower] = 0;
+            badDebt += writtenOff;
+            emit BadDebtWrittenOff(borrower, writtenOff);
+        }
 
         _transferIn(baseToken, repayAmount);
         _transferOut(collateralToken, seizeAmount);

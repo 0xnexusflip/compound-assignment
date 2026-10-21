@@ -106,6 +106,7 @@ contract LendingMarketUpgradeTest is Test {
 
         // The appended slot reads as the default, so staleness protection is live at once.
         assertEq(market.maxPriceAge(), 1 days);
+        assertEq(market.badDebt(), 0);
     }
 
     function test_upgrade_cannotBeReinitialized() public {

@@ -61,12 +61,12 @@ contract LendingMarketInvariantTest is Test {
         assertEq(weth.balanceOf(address(market)), market.totalCollateral());
     }
 
-    /// @dev Supplier claims are covered by cash plus outstanding debt.
+    /// @dev Supplier claims are covered by cash plus outstanding debt plus recorded bad debt.
     function invariant_supplierClaimsAreCovered() public view {
         uint256 claims = market.presentValueSupply(market.totalSupplyPrincipal());
         uint256 cash = base.balanceOf(address(market));
         uint256 debt = market.presentValueBorrow(market.totalBorrowPrincipal());
-        assertLe(claims, cash + debt + 1e6);
+        assertLe(claims, cash + debt + market.badDebt() + 1e6);
     }
 
     /// @dev The supply index can never outrun the borrow index (F-7).
