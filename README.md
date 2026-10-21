@@ -61,7 +61,7 @@ See `script/Deploy.s.sol` for the current staging configuration.
 
 ## Findings
 
-Fourteen defects, numbered in the order I found them. F-12 to F-14 came out of a second review pass over my own fixes. Each one has a test in `test/LendingMarket.findings.t.sol` that fails against the implementation that is live today and passes against the fixed one. `test/LendingMarket.upgrade.t.sol` reproduces the two worst ones on the live code, upgrades the proxy, and shows them closed. `test/invariant/` holds four stateful properties checked under random sequences of every user action, time, price moves and donations. Totals equal account sums. Collateral is fully backed. Supplier claims are covered by cash plus debt. The supply index never outruns the borrow index. All four hold over 2,000 runs at depth 100, which is 200,000 calls each.
+Fifteen defects, numbered in the order I found them. F-12 to F-15 came out of two further review passes over my own fixes. Each one has a test in `test/LendingMarket.findings.t.sol` that fails against the implementation that is live today and passes against the fixed one. `test/LendingMarket.upgrade.t.sol` reproduces the two worst ones on the live code, upgrades the proxy, and shows them closed. `test/invariant/` holds four stateful properties checked under random sequences of every user action, time, price moves and donations. Totals equal account sums. Collateral is fully backed. Supplier claims are covered by cash plus debt. The supply index never outruns the borrow index. All four hold over 2,000 runs at depth 100, which is 200,000 calls each.
 
 | ID | Severity | Title | Where |
 |---|---|---|---|
@@ -79,6 +79,7 @@ Fourteen defects, numbered in the order I found them. F-12 to F-14 came out of a
 | F-12 | Medium | The bad debt write-off could be dodged or over-applied | `liquidate` |
 | F-13 | Medium | Collateral factor times incentive is unbounded | `setParameters` |
 | F-14 | Medium | A compromised guardian cannot be replaced | `setPauseGuardian` |
+| F-15 | Low | Liquidation branch test and seize math disagreed by one wei | `liquidate` |
 
 ### F-1 Critical. Liquidation seizes collateral in base units
 
@@ -178,7 +179,7 @@ When a liquidation exhausts the collateral, the uncovered remainder of the debt 
 
 My first F-10 fix had two holes, found by a second review pass over the fixed code. The write-off fired only at exactly zero collateral. A liquidator could seize all but one wei and keep the uncovered debt alive and earning, then collect that interest as a supplier. The cap branch also always paid the full incentive. With 10 WETH at 1,600 (16,000 of value) against 15,000 of debt, the liquidator paid 14,545 for all of it. 455 was written off although the collateral covered the debt.
 
-**Fix.** The close rule now keys on value, not on a requested amount. If the collateral is worth less than the debt plus the incentive, the position closes in full whatever was requested. While the collateral still covers the debt, the liquidator pays the whole debt and gets the collateral, so nothing is written off. Only when the collateral is worth less than the debt is the incentive taken from the uncovered remainder, and that remainder is written off. The fuzz property covers all three regions.
+**Fix.** The close rule now keys on value, not on a requested amount. If the collateral is worth less than the debt plus the incentive, the position closes in full. The liquidator must request at least the full-close amount, or the call reverts, so nobody is charged more than they asked for. While the collateral still covers the debt, the liquidator pays the whole debt and gets the collateral, so nothing is written off. Only when the collateral is worth less than the debt is the incentive taken from the uncovered remainder, and that remainder is written off. The fuzz property covers all three regions.
 
 **Tests.** `test_liquidate_solventCollateralPaysWholeDebt`, `test_liquidate_underwaterPositionCannotBeLeftWithDust`, `testFuzz_liquidate_seizeIsWorthRepaidValuePlusIncentive`, `test_upgrade_orphanDebtCanBeWrittenOff`.
 
@@ -197,6 +198,14 @@ Only `initialize` wrote `pauseGuardian`. A compromised guardian key could re-pau
 **Fix.** `setPauseGuardian(address)`, admin only, with an event.
 
 **Test.** `test_setPauseGuardian_adminCanReplaceGuardian`.
+
+### F-15 Low. Liquidation branch test and seize math disagreed by one wei
+
+The full-close test compared two rounded values while the seize math used the unrounded product. Below a price of 1e18, which means collateral worth less than one base unit per unit, the two could disagree by one wei. The partial branch then computed a seizure one wei above the collateral and the full liquidation reverted on underflow. The staging market at 2,000 is not affected.
+
+**Fix.** The branch test compares the unrounded products.
+
+**Test.** `test_liquidate_fullCloseAtSubUnitPrice`.
 
 ## Shipping it to the live proxy
 
@@ -225,7 +234,7 @@ Warning: after the upgrade, `borrow`, `withdrawCollateral` and `liquidate` rever
 | `borrow` | 56,827 | 59,314 | +2,487 |
 | `repay` | 11,255 | 11,339 | +84 |
 | `withdrawCollateral` | 10,217 | 13,327 | +3,110 |
-| `liquidate` | 42,106 | 42,315 | +209 |
+| `liquidate` | 42,106 | 42,341 | +235 |
 | `withdraw` | 27,930 | 28,148 | +218 |
 
 The two visible increases are the oracle age check with the round-up on `borrow`, and the accrual that `withdrawCollateral` was missing (F-4).
@@ -237,6 +246,7 @@ Slither (75 detectors, `lib/`, `test/`, `script/` and `mocks/` filtered) reports
 ## Noted, not changed
 
 - `setPaused` also blocks `liquidate` and `withdrawCollateral`. A pause during a price crash shields underwater borrowers and lets bad debt form for suppliers. Compound-style markets pause seizures separately. This is a design decision for the team.
+- The liquidator profit is discontinuous where collateral value equals debt. One wei above, the liquidator pays the whole debt and earns the difference. One wei below, the incentive comes out of the written-off remainder. The continuous alternative writes off debt on positions whose collateral still covers it, which I chose not to do. Either rule is defensible, and the team should pick one.
 - Recorded bad debt (F-10) is still carried by the last supplier out. Sharing it pro rata through the supply index, or funding a reserve, needs a governance decision.
 - `initialize` applies none of the checks the setters enforce. It never runs again on the live proxy, so this only matters for a new market.
 - One `collateralFactor` serves as both the borrow limit and the liquidation threshold. A borrower at the limit is liquidatable after one second of interest. A separate, higher liquidation threshold is standard.
