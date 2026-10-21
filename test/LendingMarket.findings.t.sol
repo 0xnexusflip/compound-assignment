@@ -37,7 +37,16 @@ contract LendingMarketFindingsTest is Test {
         LendingMarket impl = new LendingMarket();
         bytes memory initData = abi.encodeCall(
             LendingMarket.initialize,
-            (admin, guardian, address(wethOracle), address(base), address(weth), 0.80e18, 1.10e18, RATE_PER_SECOND)
+            (
+                admin,
+                guardian,
+                address(wethOracle),
+                address(base),
+                address(weth),
+                0.8e18,
+                1.1e18,
+                RATE_PER_SECOND
+            )
         );
         market = LendingMarket(address(new TransparentUpgradeableProxy(address(impl), admin, initData)));
 
@@ -80,7 +89,7 @@ contract LendingMarketFindingsTest is Test {
         vm.prank(liquidator);
         market.liquidate(borrower, 1_000e18);
 
-        uint256 expectedSeize = (1_000e18 * uint256(1.10e18)) / 1_800e18;
+        uint256 expectedSeize = (1_000e18 * uint256(1.1e18)) / 1_800e18;
         assertEq(weth.balanceOf(liquidator), expectedSeize, "seize must be priced in collateral units");
         assertEq(market.collateralBalance(borrower), 10e18 - expectedSeize);
         assertApproxEqAbs(market.borrowBalanceOf(borrower), 14_000e18, 1);
@@ -233,7 +242,16 @@ contract LendingMarketFindingsTest is Test {
         LendingMarket impl = new LendingMarket();
         bytes memory initData = abi.encodeCall(
             LendingMarket.initialize,
-            (admin, guardian, address(wethOracle), address(falseBase), address(weth), 0.80e18, 1.10e18, RATE_PER_SECOND)
+            (
+                admin,
+                guardian,
+                address(wethOracle),
+                address(falseBase),
+                address(weth),
+                0.8e18,
+                1.1e18,
+                RATE_PER_SECOND
+            )
         );
         LendingMarket falseMarket =
             LendingMarket(address(new TransparentUpgradeableProxy(address(impl), admin, initData)));
@@ -293,7 +311,16 @@ contract LendingMarketFindingsTest is Test {
         LendingMarket impl = new LendingMarket();
         bytes memory initData = abi.encodeCall(
             LendingMarket.initialize,
-            (admin, guardian, address(wethOracle), address(base), address(weth), 0.80e18, 1.10e18, RATE_PER_SECOND)
+            (
+                admin,
+                guardian,
+                address(wethOracle),
+                address(base),
+                address(weth),
+                0.8e18,
+                1.1e18,
+                RATE_PER_SECOND
+            )
         );
         fresh = LendingMarket(address(new TransparentUpgradeableProxy(address(impl), admin, initData)));
     }
@@ -396,5 +423,36 @@ contract LendingMarketFindingsTest is Test {
         vm.prank(guardian);
         market.setPaused(true);
         assertTrue(market.paused());
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Property: liquidation value conservation
+    // ---------------------------------------------------------------------------------------
+
+    /// @dev For any price and repayment, the collateral seized is worth repay * incentive at the
+    ///      oracle price (within rounding) and never exceeds what the borrower holds.
+    function testFuzz_liquidate_seizeIsWorthRepaidValuePlusIncentive(uint256 price, uint256 repayAmount)
+        public
+    {
+        price = bound(price, 1e18, 1_500e18); // borrowing power at most 12,000 against 15,000 of debt
+        repayAmount = bound(repayAmount, 1e18, 15_000e18);
+
+        _postCollateral(borrower, 10e18);
+        vm.prank(borrower);
+        market.borrow(15_000e18);
+        wethOracle.setPrice(int256(price));
+
+        _fundLiquidator(repayAmount);
+        uint256 collateralBefore = market.collateralBalance(borrower);
+        vm.prank(liquidator);
+        market.liquidate(borrower, repayAmount);
+
+        uint256 seized = weth.balanceOf(liquidator);
+        uint256 paid = repayAmount - base.balanceOf(liquidator);
+        assertLe(seized, collateralBefore);
+        // seized * price == paid * incentive, within one unit of either rounding step
+        uint256 seizedValue = (seized * price) / FACTOR;
+        uint256 paidValue = (paid * uint256(1.1e18)) / FACTOR;
+        assertApproxEqAbs(seizedValue, paidValue, price / FACTOR + 2);
     }
 }

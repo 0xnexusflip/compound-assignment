@@ -40,7 +40,16 @@ contract LendingMarketUpgradeTest is Test {
         LendingMarketLegacy impl = new LendingMarketLegacy();
         bytes memory initData = abi.encodeCall(
             LendingMarketLegacy.initialize,
-            (admin, guardian, address(wethOracle), address(base), address(weth), 0.80e18, 1.10e18, RATE_PER_SECOND)
+            (
+                admin,
+                guardian,
+                address(wethOracle),
+                address(base),
+                address(weth),
+                0.8e18,
+                1.1e18,
+                RATE_PER_SECOND
+            )
         );
         proxy = new TransparentUpgradeableProxy(address(impl), admin, initData);
         legacy = LendingMarketLegacy(address(proxy));
@@ -84,8 +93,8 @@ contract LendingMarketUpgradeTest is Test {
         assertEq(address(market.oracle()), address(wethOracle));
         assertEq(address(market.baseToken()), address(base));
         assertEq(address(market.collateralToken()), address(weth));
-        assertEq(market.collateralFactor(), 0.80e18);
-        assertEq(market.liquidationIncentive(), 1.10e18);
+        assertEq(market.collateralFactor(), 0.8e18);
+        assertEq(market.liquidationIncentive(), 1.1e18);
         assertEq(market.borrowRatePerSecond(), RATE_PER_SECOND);
         assertEq(market.baseBorrowIndex(), borrowIndexBefore);
         assertEq(market.baseSupplyIndex(), supplyIndexBefore);
@@ -103,7 +112,9 @@ contract LendingMarketUpgradeTest is Test {
         _upgrade();
 
         vm.expectRevert("already initialized");
-        market.initialize(address(this), address(this), address(wethOracle), address(base), address(weth), 1e18, 1e18, 0);
+        market.initialize(
+            address(this), address(this), address(wethOracle), address(base), address(weth), 1e18, 1e18, 0
+        );
     }
 
     function test_upgrade_closesLiquidationOverSeizure() public {
@@ -123,7 +134,7 @@ contract LendingMarketUpgradeTest is Test {
 
         vm.prank(liquidator);
         market.liquidate(borrower, 1_000e18);
-        assertEq(weth.balanceOf(liquidator), (1_000e18 * uint256(1.10e18)) / 1_500e18);
+        assertEq(weth.balanceOf(liquidator), (1_000e18 * uint256(1.1e18)) / 1_500e18);
     }
 
     function test_upgrade_removesGuardianOracleControl() public {
