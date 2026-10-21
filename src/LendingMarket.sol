@@ -116,6 +116,11 @@ contract LendingMarket {
     // Initialization
     // -------------------------------------------------------------------------------------------
 
+    /// @dev Locks the bare implementation. Only a proxy, whose storage starts empty, can initialize.
+    constructor() {
+        _initialized = true;
+    }
+
     function initialize(
         address admin_,
         address pauseGuardian_,
@@ -128,6 +133,12 @@ contract LendingMarket {
     ) external {
         require(!_initialized, "already initialized");
         _initialized = true;
+
+        // The same bounds the setters enforce, so no market can start in a state they would refuse.
+        require(collateralFactor_ <= FACTOR, "cf too high");
+        require(liquidationIncentive_ >= FACTOR, "incentive below par");
+        require(collateralFactor_ * liquidationIncentive_ <= FACTOR * FACTOR, "cf times incentive above par");
+        require(IPriceOracle(oracle_).decimals() == 18, "oracle decimals");
 
         admin = admin_;
         pauseGuardian = pauseGuardian_;

@@ -665,4 +665,33 @@ contract LendingMarketFindingsTest is Test {
         vm.expectRevert("not admin");
         market.setPauseGuardian(guardian);
     }
+
+    // ---------------------------------------------------------------------------------------
+    // F-17: initialize skipped the setter checks, and the bare implementation was initializable
+    // ---------------------------------------------------------------------------------------
+
+    function test_initialize_rejectsParametersTheSettersReject() public {
+        LendingMarket impl = new LendingMarket();
+        bytes memory initData = abi.encodeCall(
+            LendingMarket.initialize,
+            (
+                admin,
+                guardian,
+                address(wethOracle),
+                address(base),
+                address(weth),
+                0.95e18,
+                1.1e18,
+                RATE_PER_SECOND
+            )
+        );
+        vm.expectRevert("cf times incentive above par");
+        new TransparentUpgradeableProxy(address(impl), admin, initData);
+    }
+
+    function test_initialize_revertsOnBareImplementation() public {
+        LendingMarket impl = new LendingMarket();
+        vm.expectRevert("already initialized");
+        impl.initialize(admin, guardian, address(wethOracle), address(base), address(weth), 0.8e18, 1.1e18, 0);
+    }
 }
