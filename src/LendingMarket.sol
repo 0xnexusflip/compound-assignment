@@ -421,6 +421,8 @@ contract LendingMarket {
     }
 
     function setPaused(bool paused_) external onlyGuardian {
+        // The guardian stops the market. Only the admin restarts it.
+        if (!paused_) require(msg.sender == admin, "not admin");
         paused = paused_;
         emit PausedSet(paused_);
     }

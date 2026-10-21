@@ -375,4 +375,26 @@ contract LendingMarketFindingsTest is Test {
         market.withdrawCollateral(10e18);
         assertEq(weth.balanceOf(borrower), 10e18);
     }
+
+    // ---------------------------------------------------------------------------------------
+    // F-9: the pause guardian can also unpause
+    // ---------------------------------------------------------------------------------------
+
+    /// @dev The guardian's remit is stopping the market. Restarting it is an admin decision.
+    function test_setPaused_guardianCannotUnpause() public {
+        vm.prank(admin);
+        market.setPaused(true);
+
+        vm.prank(guardian);
+        vm.expectRevert("not admin");
+        market.setPaused(false);
+
+        vm.prank(admin);
+        market.setPaused(false);
+        assertFalse(market.paused());
+
+        vm.prank(guardian);
+        market.setPaused(true);
+        assertTrue(market.paused());
+    }
 }
