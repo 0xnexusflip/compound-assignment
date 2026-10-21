@@ -84,6 +84,7 @@ contract LendingMarket {
     event OracleUpdated(address indexed newOracle);
     event ParametersUpdated(uint256 collateralFactor, uint256 liquidationIncentive, uint256 borrowRate);
     event PausedSet(bool paused);
+    event PauseGuardianUpdated(address indexed newGuardian);
     event MaxPriceAgeUpdated(uint256 maxPriceAge);
     event BadDebtWrittenOff(address indexed borrower, uint256 amount);
 
@@ -285,13 +286,20 @@ contract LendingMarket {
         // Collateral is priced in base terms, so the seized amount is the repaid base value plus the
         // incentive, converted into collateral units at the oracle price.
         uint256 price = getPrice();
-        uint256 seizeAmount = (repayAmount * liquidationIncentive) / price;
         uint256 available = collateralBalance[borrower];
-        if (seizeAmount > available) {
-            // The position cannot cover the request. Seize what is left and charge the liquidator
-            // only for that, rounded up. The uncovered debt stays on the books.
+        uint256 collateralValue = (available * price) / FACTOR;
+        uint256 seizeAmount;
+        if (collateralValue < (owed * liquidationIncentive) / FACTOR) {
+            // The collateral cannot pay the debt plus the incentive, so the position is closed in full
+            // whatever was requested. A partial close here would leave dust that dodges the write-off
+            // below. The liquidator pays the whole debt while the collateral still covers it, and
+            // only when it does not is the incentive taken out of the uncovered remainder.
             seizeAmount = available;
-            repayAmount = (seizeAmount * price + liquidationIncentive - 1) / liquidationIncentive;
+            repayAmount = collateralValue >= owed
+                ? owed
+                : (collateralValue * FACTOR + liquidationIncentive - 1) / liquidationIncentive;
+        } else {
+            seizeAmount = (repayAmount * liquidationIncentive) / price;
         }
 
         uint256 principal = repayAmount == owed ? borrowPrincipal[borrower] : _principalForBorrow(repayAmount);
@@ -421,6 +429,9 @@ contract LendingMarket {
     {
         require(collateralFactor_ <= FACTOR, "cf too high");
         require(liquidationIncentive_ >= FACTOR, "incentive below par");
+        // A position at the borrow limit must still be able to pay the incentive out of its own
+        // collateral, or a borrower can liquidate itself at a profit against the suppliers.
+        require(collateralFactor_ * liquidationIncentive_ <= FACTOR * FACTOR, "cf times incentive above par");
 
         accrueInterest();
 
@@ -442,6 +453,11 @@ contract LendingMarket {
         if (!paused_) require(msg.sender == admin, "not admin");
         paused = paused_;
         emit PausedSet(paused_);
+    }
+
+    function setPauseGuardian(address newGuardian) external onlyAdmin {
+        pauseGuardian = newGuardian;
+        emit PauseGuardianUpdated(newGuardian);
     }
 
     function setAdmin(address newAdmin) external onlyAdmin {

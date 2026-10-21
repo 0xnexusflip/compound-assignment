@@ -119,7 +119,7 @@ contract LendingMarketUpgradeTest is Test {
     }
 
     function test_upgrade_closesLiquidationOverSeizure() public {
-        wethOracle.setPrice(1_500e18); // 12,000 of borrowing power against ~15,750 of debt
+        wethOracle.setPrice(1_800e18); // 14,400 of borrowing power against ~15,750 of debt
         base.mint(liquidator, 2_000e18);
         vm.prank(liquidator);
         base.approve(address(proxy), type(uint256).max);
@@ -135,7 +135,7 @@ contract LendingMarketUpgradeTest is Test {
 
         vm.prank(liquidator);
         market.liquidate(borrower, 1_000e18);
-        assertEq(weth.balanceOf(liquidator), (1_000e18 * uint256(1.1e18)) / 1_500e18);
+        assertEq(weth.balanceOf(liquidator), (1_000e18 * uint256(1.1e18)) / 1_800e18);
     }
 
     function test_upgrade_removesGuardianOracleControl() public {
@@ -165,5 +165,32 @@ contract LendingMarketUpgradeTest is Test {
         wethOracle.setPrice(2_000e18);
         vm.prank(borrower);
         market.borrow(1e18);
+    }
+
+    /// @dev Debt that a legacy liquidation left behind with zero collateral keeps earning interest
+    ///      for suppliers after the upgrade. One liquidate call per orphan account, with any
+    ///      amount, writes it off. This is a step in the upgrade runbook.
+    function test_upgrade_orphanDebtCanBeWrittenOff() public {
+        wethOracle.setPrice(1_500e18);
+        base.mint(liquidator, 2_000e18);
+        vm.prank(liquidator);
+        base.approve(address(proxy), type(uint256).max);
+
+        // Legacy over-seizure: 1,000 repaid, all 10 WETH taken, ~14,750 of debt left with no collateral.
+        vm.prank(liquidator);
+        legacy.liquidate(borrower, 1_000e18);
+        assertEq(legacy.collateralBalance(borrower), 0);
+        uint256 orphan = legacy.borrowBalanceOf(borrower);
+        assertGt(orphan, 14_000e18);
+
+        _upgrade();
+
+        address keeper = makeAddr("keeper");
+        vm.prank(keeper);
+        market.liquidate(borrower, 1);
+
+        assertEq(market.borrowBalanceOf(borrower), 0, "orphan debt written off");
+        assertEq(market.badDebt(), orphan);
+        assertEq(base.balanceOf(keeper), 0, "the keeper pays nothing");
     }
 }

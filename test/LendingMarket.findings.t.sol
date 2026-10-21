@@ -430,12 +430,13 @@ contract LendingMarketFindingsTest is Test {
     // Property: liquidation value conservation
     // ---------------------------------------------------------------------------------------
 
-    /// @dev For any price and repayment, the collateral seized is worth repay * incentive at the
-    ///      oracle price (within rounding) and never exceeds what the borrower holds.
+    /// @dev For any unhealthy price and any requested repayment, the liquidator never pays more
+    ///      than the collateral is worth, the seized collateral is worth at most the payment plus
+    ///      the incentive, and a position that cannot pay the incentive is closed in full.
     function testFuzz_liquidate_seizeIsWorthRepaidValuePlusIncentive(uint256 price, uint256 repayAmount)
         public
     {
-        price = bound(price, 1e18, 1_500e18); // borrowing power at most 12,000 against 15,000 of debt
+        price = bound(price, 1e18, 1_874e18); // unhealthy for 15,000 of debt on 10 WETH
         repayAmount = bound(repayAmount, 1e18, 15_000e18);
 
         _postCollateral(borrower, 10e18);
@@ -443,18 +444,35 @@ contract LendingMarketFindingsTest is Test {
         market.borrow(15_000e18);
         wethOracle.setPrice(int256(price));
 
-        _fundLiquidator(repayAmount);
-        uint256 collateralBefore = market.collateralBalance(borrower);
+        _fundLiquidator(20_000e18);
+        uint256 owed = market.borrowBalanceOf(borrower);
+        uint256 collateralValue = (10e18 * price) / FACTOR;
         vm.prank(liquidator);
         market.liquidate(borrower, repayAmount);
 
         uint256 seized = weth.balanceOf(liquidator);
-        uint256 paid = repayAmount - base.balanceOf(liquidator);
-        assertLe(seized, collateralBefore);
-        // seized * price == paid * incentive, within one unit of either rounding step
+        uint256 paid = 20_000e18 - base.balanceOf(liquidator);
         uint256 seizedValue = (seized * price) / FACTOR;
         uint256 paidValue = (paid * uint256(1.1e18)) / FACTOR;
-        assertApproxEqAbs(seizedValue, paidValue, price / FACTOR + 2);
+
+        assertLe(seized, 10e18);
+        assertLe(paid, owed);
+        if (collateralValue < (owed * uint256(1.1e18)) / FACTOR) {
+            assertEq(seized, 10e18, "underwater position must close in full");
+            assertEq(market.collateralBalance(borrower), 0);
+            assertEq(market.borrowBalanceOf(borrower), 0);
+            if (collateralValue >= owed) {
+                assertEq(paid, owed, "solvent collateral pays the whole debt");
+                assertEq(market.badDebt(), 0);
+            } else {
+                assertApproxEqAbs(seizedValue, paidValue, price / FACTOR + 2);
+                assertApproxEqAbs(market.badDebt(), owed - paid, 1);
+            }
+        } else {
+            assertEq(paid, repayAmount);
+            assertApproxEqAbs(seizedValue, paidValue, price / FACTOR + 2);
+            assertEq(market.badDebt(), 0);
+        }
     }
 
     // ---------------------------------------------------------------------------------------
@@ -501,5 +519,81 @@ contract LendingMarketFindingsTest is Test {
         vm.prank(borrower);
         market.supplyCollateral(1e18);
         assertEq(market.collateralBalance(borrower), 11e18);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // F-12: the full-close rule, from the verification pass on F-10
+    // ---------------------------------------------------------------------------------------
+
+    /// @dev 10 WETH at 1,600 is 16,000 against 15,000 of debt: solvent, but short of the 10
+    ///      percent incentive. The liquidator must pay the whole debt for the collateral. Nothing
+    ///      may be written off while the collateral still covers the debt.
+    function test_liquidate_solventCollateralPaysWholeDebt() public {
+        _postCollateral(borrower, 10e18);
+        vm.prank(borrower);
+        market.borrow(15_000e18);
+        wethOracle.setPrice(1_600e18);
+
+        _fundLiquidator(15_000e18);
+        vm.prank(liquidator);
+        market.liquidate(borrower, 15_000e18);
+
+        assertEq(weth.balanceOf(liquidator), 10e18);
+        assertEq(base.balanceOf(liquidator), 0, "liquidator pays the full 15,000");
+        assertEq(market.badDebt(), 0, "nothing to write off");
+        assertEq(market.borrowBalanceOf(borrower), 0);
+    }
+
+    /// @dev A liquidator cannot leave one wei of collateral behind to keep uncovered debt alive and
+    ///      earning. An underwater position is closed in full whatever amount was requested.
+    function test_liquidate_underwaterPositionCannotBeLeftWithDust() public {
+        _postCollateral(borrower, 10e18);
+        vm.prank(borrower);
+        market.borrow(15_000e18);
+        wethOracle.setPrice(1_000e18);
+
+        _fundLiquidator(10_000e18);
+        vm.prank(liquidator);
+        market.liquidate(borrower, 9_090_909_090_909_090_909_090); // would have seized 10e18 - 1
+
+        assertEq(market.collateralBalance(borrower), 0);
+        assertEq(market.borrowBalanceOf(borrower), 0);
+        assertGt(market.badDebt(), 0);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // F-13: collateral factor times incentive is unbounded
+    // ---------------------------------------------------------------------------------------
+
+    /// @dev With 0.95 and 1.10 each inside its own bound, a position at the borrow limit cannot pay
+    ///      the incentive out of its own collateral, and the gap would come from the suppliers.
+    function test_setParameters_revertsWhenFactorTimesIncentiveAbovePar() public {
+        vm.prank(admin);
+        vm.expectRevert("cf times incentive above par");
+        market.setParameters(0.95e18, 1.1e18, RATE_PER_SECOND);
+
+        vm.prank(admin);
+        market.setParameters(0.9e18, 1.1e18, RATE_PER_SECOND);
+        assertEq(market.collateralFactor(), 0.9e18);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // F-14: a compromised guardian cannot be replaced
+    // ---------------------------------------------------------------------------------------
+
+    function test_setPauseGuardian_adminCanReplaceGuardian() public {
+        address newGuardian = makeAddr("newGuardian");
+
+        vm.prank(guardian);
+        vm.expectRevert("not admin");
+        market.setPauseGuardian(newGuardian);
+
+        vm.prank(admin);
+        market.setPauseGuardian(newGuardian);
+        assertEq(market.pauseGuardian(), newGuardian);
+
+        vm.prank(guardian);
+        vm.expectRevert("not guardian");
+        market.setPaused(true);
     }
 }
